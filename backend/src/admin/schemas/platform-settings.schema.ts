@@ -80,6 +80,9 @@ export class PlatformSettings {
   @Prop({ required: true, default: true })
   withdrawalsEnabled: boolean;
 
+  @Prop({ required: true, min: 0, default: 10 })
+  referralBonusPercent: number;
+
   @Prop({
     required: true,
     type: [

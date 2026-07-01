@@ -672,7 +672,11 @@ export class AdminService {
       .exec();
     if (previousApprovedDeposits > 0) return;
 
-    const bonusAmount = this.referralBonusAmount();
+    const settings = await this.ensureSettings();
+    const bonusAmount = this.calculateReferralBonusAmount(
+      qualifyingDepositAmount,
+      settings?.referralBonusPercent ?? this.defaultReferralBonusPercent(),
+    );
     if (bonusAmount <= 0) return;
 
     const referrer = await this.userModel.findById(user.referredBy).exec();
@@ -708,8 +712,17 @@ export class AdminService {
     });
   }
 
-  private referralBonusAmount() {
-    return Number(this.configService.get<string>('REFERRAL_BONUS_USD') ?? 10);
+  private defaultReferralBonusPercent() {
+    return Number(this.configService.get<string>('REFERRAL_BONUS_PERCENT') ?? 10);
+  }
+
+  private calculateReferralBonusAmount(depositAmount: number, referralBonusPercent: number) {
+    const amount = Number(depositAmount);
+    const percent = Number(referralBonusPercent);
+    if (!Number.isFinite(amount) || !Number.isFinite(percent) || amount <= 0 || percent <= 0) {
+      return 0;
+    }
+    return Math.round(amount * percent) / 100;
   }
 
   private normalizeUserRoles(roles: string[] | undefined, actor?: AdminActor, requireInput = false): User['roles'] {
@@ -837,6 +850,7 @@ export class AdminService {
           maxWithdrawal: 150000,
           depositsEnabled: true,
           withdrawalsEnabled: true,
+          referralBonusPercent: this.defaultReferralBonusPercent(),
           paymentMethods: DEFAULT_PAYMENT_METHODS,
         },
       },
@@ -847,6 +861,13 @@ export class AdminService {
       .updateOne(
         { key: 'default', $or: [{ paymentMethods: { $exists: false } }, { paymentMethods: { $size: 0 } }] },
         { $set: { paymentMethods: DEFAULT_PAYMENT_METHODS } },
+      )
+      .exec();
+
+    await this.settingsModel
+      .updateOne(
+        { key: 'default', referralBonusPercent: { $exists: false } },
+        { $set: { referralBonusPercent: this.defaultReferralBonusPercent() } },
       )
       .exec();
 

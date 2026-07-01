@@ -147,6 +147,7 @@ interface PlatformSettings {
   maxWithdrawal: number
   depositsEnabled: boolean
   withdrawalsEnabled: boolean
+  referralBonusPercent: number
   paymentMethods: PaymentMethodRecord[]
 }
 
@@ -1395,6 +1396,13 @@ export function PlatformSettingsPage() {
                 value={settings.maxWithdrawal}
                 onChange={(maxWithdrawal) =>
                   setSettings({ ...settings, maxWithdrawal })
+                }
+              />
+              <NumberField
+                label='Referral Bonus Percent'
+                value={settings.referralBonusPercent}
+                onChange={(referralBonusPercent) =>
+                  setSettings({ ...settings, referralBonusPercent })
                 }
               />
             </div>

@@ -23,7 +23,7 @@ export interface PlatformSettings {
   depositsEnabled: boolean;
   withdrawalsEnabled: boolean;
   paymentMethods: PaymentMethod[];
-  referralBonusUsd: number;
+  referralBonusPercent: number;
 }
 
 export interface PaymentMethod {
@@ -161,7 +161,7 @@ export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
       withdrawalEnabled: true,
     },
   ],
-  referralBonusUsd: 10,
+  referralBonusPercent: 10,
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";

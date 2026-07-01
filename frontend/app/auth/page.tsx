@@ -268,7 +268,7 @@ export default function Auth() {
                 />
               </div>
               <p className="mt-2 text-[11px] leading-relaxed text-foreground/50">
-                Have an invite? Enter it here. Referrers earn ${platformSettings.referralBonusUsd.toFixed(2)} after your first deposit is approved.
+                Have an invite? Enter it here. Referrers earn {platformSettings.referralBonusPercent}% of your first approved deposit.
               </p>
             </div>
           )}

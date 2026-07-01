@@ -196,7 +196,7 @@ export default function Dashboard() {
                 </h3>
               </div>
               <p className="mb-3 max-w-2xl text-xs leading-relaxed text-foreground/55">
-                Share your link and earn {format(platformSettings.referralBonusUsd)} when a referred investor&apos;s first deposit is approved.
+                Share your link and earn {platformSettings.referralBonusPercent}% of a referred investor&apos;s first approved deposit.
               </p>
               <div className="grid gap-3 text-xs sm:grid-cols-3">
                 <div className="rounded-2xl border border-card-border bg-card/35 p-3">
