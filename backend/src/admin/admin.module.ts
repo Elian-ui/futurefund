@@ -22,12 +22,14 @@ import {
 import { AuditLog, AuditLogSchema } from './schemas/audit-log.schema';
 import { JobLock, JobLockSchema } from '../jobs/schemas/job-lock.schema';
 import { MailModule } from '../mail/mail.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
   imports: [
     AuthModule,
     InvestorModule,
     MailModule,
+    PaymentsModule,
     MongooseModule.forFeature([
       { name: User.name, schema: UserSchema },
       { name: Investment.name, schema: InvestmentSchema },

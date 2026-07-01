@@ -166,7 +166,7 @@ export class SupportService {
     }
 
     const ticket = await this.ticketModel
-      .findByIdAndUpdate(ticketId, { $set: update }, { new: true, runValidators: true })
+      .findByIdAndUpdate(ticketId, { $set: update }, { returnDocument: 'after', runValidators: true })
       .populate('userId', 'name email balance')
       .populate('assignedTo', 'name email')
       .exec();

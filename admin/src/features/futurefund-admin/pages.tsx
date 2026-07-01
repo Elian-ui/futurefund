@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   Ticket,
   TrendingUp,
+  UserPlus,
   Users,
 } from 'lucide-react'
 import { ConfigDrawer } from '@/components/config-drawer'
@@ -54,11 +55,27 @@ interface UserRecord {
   _id: string
   name: string
   email: string
+  phoneNumber?: string
   roles?: string[]
   balance: number
   totalInvested: number
   totalEarned: number
+  emailVerified?: boolean
+  deletedAt?: string
+  deletionReason?: string
   createdAt?: string
+}
+
+interface UserDraft {
+  name: string
+  email: string
+  phoneNumber: string
+  password: string
+  balance: number
+  totalInvested: number
+  totalEarned: number
+  emailVerified: boolean
+  roles: string[]
 }
 
 interface PackageRecord {
@@ -83,6 +100,12 @@ interface TransactionRecord {
   method?: string
   destination?: string
   reference?: string
+  externalPaymentId?: string
+  externalPaymentProvider?: string
+  externalPaymentStatus?: string
+  externalProviderReference?: string
+  externalPaymentFee?: number
+  externalFailureReason?: string
   reviewNote?: string
   timestamp: string
 }
@@ -124,6 +147,22 @@ interface PlatformSettings {
   maxWithdrawal: number
   depositsEnabled: boolean
   withdrawalsEnabled: boolean
+  paymentMethods: PaymentMethodRecord[]
+}
+
+interface PaymentMethodRecord {
+  id: string
+  label: string
+  method: string
+  network?: string
+  address?: string
+  channel?: 'crypto' | 'mobile_money'
+  provider?: string
+  currency?: string
+  requiresPhoneNumber?: boolean
+  enabled: boolean
+  depositEnabled: boolean
+  withdrawalEnabled: boolean
 }
 
 interface SupportMessage {
@@ -221,6 +260,18 @@ const emptyPackage: PackageRecord = {
   isActive: true,
 }
 
+const emptyUserDraft: UserDraft = {
+  name: '',
+  email: '',
+  phoneNumber: '+256',
+  password: '',
+  balance: 0,
+  totalInvested: 0,
+  totalEarned: 0,
+  emailVerified: true,
+  roles: ['investor'],
+}
+
 function PageShell({
   title,
   description,
@@ -315,21 +366,130 @@ function TextField({
   value,
   onChange,
   disabled,
+  type = 'text',
 }: {
   label: string
   value: string
   onChange: (value: string) => void
   disabled?: boolean
+  type?: string
 }) {
   return (
     <div className='space-y-2'>
       <Label>{label}</Label>
       <Input
+        type={type}
         value={value}
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
       />
     </div>
+  )
+}
+
+function UserForm({
+  value,
+  mode,
+  saving,
+  onChange,
+  onSubmit,
+  onCancel,
+}: {
+  value: UserDraft
+  mode: 'create' | 'edit'
+  saving: boolean
+  onChange: (value: UserDraft) => void
+  onSubmit: () => void
+  onCancel: () => void
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>{mode === 'create' ? 'Create Investor' : 'Edit Investor'}</CardTitle>
+        <CardDescription>
+          Manage account identity, wallet figures, verification, and roles.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className='grid gap-4 lg:grid-cols-6'>
+        <TextField
+          label='Name'
+          value={value.name}
+          onChange={(name) => onChange({ ...value, name })}
+        />
+        <TextField
+          label='Email'
+          value={value.email}
+          onChange={(email) => onChange({ ...value, email })}
+        />
+        <TextField
+          label='Phone'
+          value={value.phoneNumber}
+          onChange={(phoneNumber) => onChange({ ...value, phoneNumber })}
+        />
+        <TextField
+          label={mode === 'create' ? 'Password' : 'New password'}
+          type='password'
+          value={value.password}
+          onChange={(password) => onChange({ ...value, password })}
+        />
+        <NumberField
+          label='Wallet Balance'
+          value={value.balance}
+          onChange={(balance) => onChange({ ...value, balance })}
+        />
+        <NumberField
+          label='Total Invested'
+          value={value.totalInvested}
+          onChange={(totalInvested) => onChange({ ...value, totalInvested })}
+        />
+        <NumberField
+          label='Total Earned'
+          value={value.totalEarned}
+          onChange={(totalEarned) => onChange({ ...value, totalEarned })}
+        />
+        <div className='space-y-2 lg:col-span-2'>
+          <Label>Roles</Label>
+          <div className='flex flex-wrap gap-2 rounded-md border p-2'>
+            {['investor', 'support', 'admin', 'superadmin'].map((role) => (
+              <label
+                key={role}
+                className='flex items-center gap-1 rounded-md border px-2 py-1 text-xs'
+              >
+                <input
+                  type='checkbox'
+                  checked={value.roles.includes(role)}
+                  onChange={(event) => {
+                    const roles = event.target.checked
+                      ? Array.from(new Set([...value.roles, role]))
+                      : value.roles.filter((item) => item !== role)
+                    onChange({ ...value, roles })
+                  }}
+                />
+                {role}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className='flex items-center gap-2 pt-7'>
+          <Switch
+            checked={value.emailVerified}
+            onCheckedChange={(emailVerified) =>
+              onChange({ ...value, emailVerified })
+            }
+          />
+          <Label>Email verified</Label>
+        </div>
+        <div className='flex items-center gap-2 lg:col-span-6'>
+          <Button onClick={onSubmit} disabled={saving}>
+            {saving ? <Loader2 className='animate-spin' /> : <Save />}
+            {mode === 'create' ? 'Create investor' : 'Save investor'}
+          </Button>
+          <Button variant='outline' onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
   )
 }
 
@@ -428,11 +588,17 @@ function PackageForm({
 export function InvestorsPage() {
   const [users, setUsers] = useState<UserRecord[]>([])
   const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [draft, setDraft] = useState<UserDraft>(emptyUserDraft)
+  const [editing, setEditing] = useState<UserRecord | null>(null)
+  const [showCreate, setShowCreate] = useState(false)
 
   async function loadUsers() {
     setLoading(true)
     try {
-      const { data } = await api.get<UserRecord[]>('/admin/users')
+      const { data } = await api.get<UserRecord[]>('/admin/users', {
+        params: { includeDeleted: true },
+      })
       setUsers(data)
     } catch (error: any) {
       toast.error(error?.response?.data?.message || 'Unable to load investors')
@@ -444,6 +610,67 @@ export function InvestorsPage() {
   useEffect(() => {
     loadUsers()
   }, [])
+
+  function startCreate() {
+    setEditing(null)
+    setDraft(emptyUserDraft)
+    setShowCreate(true)
+  }
+
+  function startEdit(user: UserRecord) {
+    setShowCreate(false)
+    setEditing(user)
+    setDraft({
+      name: user.name,
+      email: user.email,
+      phoneNumber: user.phoneNumber ?? '',
+      password: '',
+      balance: user.balance,
+      totalInvested: user.totalInvested,
+      totalEarned: user.totalEarned,
+      emailVerified: user.emailVerified ?? false,
+      roles: user.roles?.length ? user.roles : ['investor'],
+    })
+  }
+
+  function cancelForm() {
+    setShowCreate(false)
+    setEditing(null)
+    setDraft(emptyUserDraft)
+  }
+
+  async function createUser() {
+    setSaving(true)
+    try {
+      await api.post('/admin/users', draft)
+      toast.success('Investor created')
+      cancelForm()
+      await loadUsers()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || 'Unable to create investor')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function updateUser() {
+    if (!editing) return
+    setSaving(true)
+    try {
+      const { password, ...payload } = draft
+      await api.patch(`/admin/users/${editing._id}`, {
+        ...payload,
+        password: password.trim() || undefined,
+      })
+      toast.success('Investor updated')
+      cancelForm()
+      await loadUsers()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || 'Unable to update investor')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   async function updateRoles(user: UserRecord, role: string, checked: boolean) {
     const current = user.roles ?? []
@@ -460,11 +687,55 @@ export function InvestorsPage() {
     }
   }
 
+  async function softDeleteUser(user: UserRecord) {
+    if (!window.confirm(`Soft delete ${user.name}?`)) return
+
+    try {
+      await api.delete(`/admin/users/${user._id}`, {
+        data: { reason: 'Deleted from admin investors screen' },
+      })
+      toast.success('Investor soft deleted')
+      await loadUsers()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || 'Unable to delete investor')
+    }
+  }
+
+  async function restoreUser(user: UserRecord) {
+    try {
+      await api.post(`/admin/users/${user._id}/restore`)
+      toast.success('Investor restored')
+      await loadUsers()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.message || 'Unable to restore investor')
+    }
+  }
+
   return (
     <PageShell
       title='Investors'
-      description='Review investor balances, earnings, and access roles.'
+      description='Create, edit, soft delete, restore, and review investor accounts.'
     >
+      <div className='mb-4 flex justify-end'>
+        <Button onClick={startCreate}>
+          <UserPlus />
+          Create investor
+        </Button>
+      </div>
+
+      {(showCreate || editing) && (
+        <div className='mb-6'>
+          <UserForm
+            value={draft}
+            mode={editing ? 'edit' : 'create'}
+            saving={saving}
+            onChange={setDraft}
+            onSubmit={editing ? updateUser : createUser}
+            onCancel={cancelForm}
+          />
+        </div>
+      )}
+
       {loading ? (
         <LoadingState />
       ) : users.length === 0 ? (
@@ -480,6 +751,8 @@ export function InvestorsPage() {
                   <TableHead>Invested</TableHead>
                   <TableHead>Earned</TableHead>
                   <TableHead>Roles</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className='text-right'>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -489,6 +762,11 @@ export function InvestorsPage() {
                       <div>
                         <p className='font-semibold'>{user.name}</p>
                         <p className='text-muted-foreground text-xs'>{user.email}</p>
+                        {user.phoneNumber && (
+                          <p className='text-muted-foreground text-xs'>
+                            {user.phoneNumber}
+                          </p>
+                        )}
                       </div>
                     </TableCell>
                     <TableCell>{money.format(user.balance)}</TableCell>
@@ -512,6 +790,51 @@ export function InvestorsPage() {
                               {role}
                             </label>
                           )
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      {user.deletedAt ? (
+                        <div className='space-y-1'>
+                          <Badge variant='destructive'>Deleted</Badge>
+                          {user.deletionReason && (
+                            <p className='text-muted-foreground max-w-48 text-xs'>
+                              {user.deletionReason}
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <Badge variant='default'>Active</Badge>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <div className='flex justify-end gap-2'>
+                        <Button
+                          variant='outline'
+                          size='sm'
+                          onClick={() => startEdit(user)}
+                        >
+                          <Pencil />
+                          Edit
+                        </Button>
+                        {user.deletedAt ? (
+                          <Button
+                            variant='outline'
+                            size='sm'
+                            onClick={() => restoreUser(user)}
+                          >
+                            <ShieldCheck />
+                            Restore
+                          </Button>
+                        ) : (
+                          <Button
+                            variant='destructive'
+                            size='sm'
+                            onClick={() => softDeleteUser(user)}
+                          >
+                            <Trash2 />
+                            Delete
+                          </Button>
                         )}
                       </div>
                     </TableCell>
@@ -774,6 +1097,7 @@ function TransactionsList({
               <TableBody>
                 {rows.map((tx) => {
                   const txOwner = owner(tx.userId)
+                  const autoPolled = Boolean(tx.externalPaymentId && tx.externalPaymentProvider)
                   return (
                     <TableRow key={tx._id}>
                       <TableCell>
@@ -806,6 +1130,22 @@ function TransactionsList({
                               {[tx.method, tx.reference].filter(Boolean).join(' · ')}
                             </p>
                           )}
+                          {autoPolled && (
+                            <p className='text-muted-foreground text-xs'>
+                              Auto polling {tx.externalPaymentProvider}
+                              {tx.externalPaymentStatus ? ` · ${tx.externalPaymentStatus}` : ''}
+                            </p>
+                          )}
+                          {tx.externalProviderReference && (
+                            <p className='text-muted-foreground text-xs'>
+                              Provider ref: {tx.externalProviderReference}
+                            </p>
+                          )}
+                          {tx.externalFailureReason && (
+                            <p className='text-destructive max-w-md text-xs'>
+                              {tx.externalFailureReason}
+                            </p>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell>{money.format(tx.amount)}</TableCell>
@@ -813,8 +1153,12 @@ function TransactionsList({
                         {date(tx.timestamp)}
                       </TableCell>
                       <TableCell>
-                        {tx.status === 'pending' &&
-                        ['deposit', 'withdrawal'].includes(tx.type) ? (
+                        {tx.status === 'pending' && autoPolled ? (
+                          <p className='text-muted-foreground text-right text-xs'>
+                            Auto polling
+                          </p>
+                        ) : tx.status === 'pending' &&
+                          ['deposit', 'withdrawal'].includes(tx.type) ? (
                           <div className='flex justify-end gap-2'>
                             <Button
                               size='sm'
@@ -998,6 +1342,19 @@ export function PlatformSettingsPage() {
     }
   }
 
+  function updatePaymentMethod(
+    id: string,
+    changes: Partial<PaymentMethodRecord>
+  ) {
+    if (!settings) return
+    setSettings({
+      ...settings,
+      paymentMethods: (settings.paymentMethods ?? []).map((method) =>
+        method.id === id ? { ...method, ...changes } : method
+      ),
+    })
+  }
+
   return (
     <PageShell
       title='Platform Settings'
@@ -1059,6 +1416,69 @@ export function PlatformSettingsPage() {
                     setSettings({ ...settings, withdrawalsEnabled })
                   }
                 />
+              </div>
+            </div>
+            <div className='space-y-3'>
+              <div>
+                <h3 className='text-sm font-semibold'>Payment Methods</h3>
+                <p className='text-muted-foreground text-xs'>
+                  Toggle each method globally, then choose whether it can be used
+                  for deposits, withdrawals, or both.
+                </p>
+              </div>
+              <div className='rounded-md border'>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Method</TableHead>
+                      <TableHead>Enabled</TableHead>
+                      <TableHead>Deposits</TableHead>
+                      <TableHead>Withdrawals</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {(settings.paymentMethods ?? []).map((method) => (
+                      <TableRow key={method.id}>
+                        <TableCell>
+                          <div>
+                            <p className='font-semibold'>{method.label}</p>
+                            <p className='text-muted-foreground text-xs'>
+                              {method.method}
+                              {method.network ? ` · ${method.network}` : ''}
+                              {method.currency ? ` · ${method.currency}` : ''}
+                            </p>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Switch
+                            checked={method.enabled}
+                            onCheckedChange={(enabled) =>
+                              updatePaymentMethod(method.id, { enabled })
+                            }
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Switch
+                            checked={method.depositEnabled}
+                            disabled={!method.enabled}
+                            onCheckedChange={(depositEnabled) =>
+                              updatePaymentMethod(method.id, { depositEnabled })
+                            }
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Switch
+                            checked={method.withdrawalEnabled}
+                            disabled={!method.enabled}
+                            onCheckedChange={(withdrawalEnabled) =>
+                              updatePaymentMethod(method.id, { withdrawalEnabled })
+                            }
+                          />
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
               </div>
             </div>
             <Button onClick={save} disabled={saving}>

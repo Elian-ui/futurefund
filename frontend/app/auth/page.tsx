@@ -4,6 +4,7 @@ import React, { useState, useEffect } from "react";
 import { useFutureFund } from "../context/useFutureFund";
 import { Shield, Mail, User, Check, KeyRound, Lock, Eye, EyeOff, AlertCircle, Users } from "lucide-react";
 import { useRouter } from "next/navigation";
+import PhoneNumberInput from "../components/PhoneNumberInput";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
@@ -14,6 +15,7 @@ export default function Auth() {
   const [activeTab, setActiveTab] = useState<"login" | "register">("login");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [password, setPassword] = useState("");
   const [referralCode, setReferralCode] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -66,6 +68,12 @@ export default function Auth() {
       return;
     }
 
+    if (activeTab === "register" && !phoneNumber.trim()) {
+      setFeedback({ success: false, message: "Phone number is required." });
+      setLoading(false);
+      return;
+    }
+
     try {
       const endpoint =
         activeTab === "login" ? `${API_BASE}/auth/login` : `${API_BASE}/auth/register`;
@@ -76,6 +84,7 @@ export default function Auth() {
           : {
               name: name.trim(),
               email: email.trim(),
+              phoneNumber: phoneNumber.trim(),
               password,
               referralCode: referralCode.trim() || undefined,
             };
@@ -109,6 +118,7 @@ export default function Auth() {
       await loginWithToken(data.access_token, {
         name: data.user.name,
         email: data.user.email,
+        phoneNumber: data.user.phoneNumber,
         balance: data.user.balance,
         totalInvested: data.user.totalInvested,
         totalEarned: data.user.totalEarned,
@@ -185,6 +195,16 @@ export default function Auth() {
                   className="bg-transparent border-0 text-white placeholder-foreground/25 focus:outline-none focus:ring-0 w-full text-base font-medium sm:text-sm"
                 />
               </div>
+            </div>
+          )}
+
+          {/* Phone number (register only) */}
+          {activeTab === "register" && (
+            <div>
+              <label className="block text-xs font-semibold text-foreground/75 uppercase tracking-wider mb-2">
+                Mobile Money Number
+              </label>
+              <PhoneNumberInput value={phoneNumber} onChange={setPhoneNumber} />
             </div>
           )}
 

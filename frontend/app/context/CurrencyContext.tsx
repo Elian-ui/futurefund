@@ -67,7 +67,9 @@ const CurrencyContext = createContext<CurrencyContextType | undefined>(undefined
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function CurrencyProvider({ children }: { children: React.ReactNode }) {
-  const [currency, setCurrencyState] = useState<Currency>(CURRENCIES[0]); // USD default
+  const [currency, setCurrencyState] = useState<Currency>(
+    CURRENCIES.find((c) => c.code === "UGX") ?? CURRENCIES[0],
+  );
   const [rates, setRates] = useState<Record<string, number>>(FALLBACK_RATES);
   const [ratesLoaded, setRatesLoaded] = useState(false);
 

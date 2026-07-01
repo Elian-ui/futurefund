@@ -18,6 +18,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
   private readonly timers: NodeJS.Timeout[] = [];
   private payoutJobRunning = false;
   private supportJobRunning = false;
+  private mobileMoneyJobRunning = false;
 
   constructor(
     private readonly investorService: InvestorService,
@@ -46,9 +47,15 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       this.getEnvNumber('SUPPORT_JOB_INTERVAL_MS', 300_000),
       () => this.logSupportBacklog(),
     );
+    this.registerJob(
+      'mobile money status polling',
+      this.getEnvNumber('MOBILE_MONEY_POLL_INTERVAL_MS', 30_000),
+      () => this.pollMobileMoneyTransactions(),
+    );
 
     void this.processInvestmentPayouts();
     void this.logSupportBacklog();
+    void this.pollMobileMoneyTransactions();
   }
 
   onModuleDestroy() {
@@ -155,6 +162,33 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async pollMobileMoneyTransactions() {
+    if (this.mobileMoneyJobRunning) return;
+    this.mobileMoneyJobRunning = true;
+
+    try {
+      await this.withJobLock(
+        'mobile-money-polling',
+        this.getEnvNumber('MOBILE_MONEY_POLL_LOCK_MS', 2 * 60 * 1000),
+        async () => {
+          const result = await this.investorService.processMobileMoneyTransactions(
+            this.getEnvNumber('MOBILE_MONEY_POLL_LIMIT', 50),
+          );
+
+          if (result.approved > 0 || result.rejected > 0) {
+            this.logger.log(
+              `Mobile money polling checked ${result.checked}, approved ${result.approved}, rejected ${result.rejected}.`,
+            );
+          }
+        },
+      );
+    } catch (error) {
+      this.logger.error('Mobile money polling failed', error instanceof Error ? error.stack : error);
+    } finally {
+      this.mobileMoneyJobRunning = false;
+    }
+  }
+
   private getEnvNumber(name: string, fallback: number) {
     const value = Number(process.env[name]);
     return Number.isFinite(value) ? value : fallback;
@@ -174,7 +208,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
             lastRunAt: now,
           },
         },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .exec();
 

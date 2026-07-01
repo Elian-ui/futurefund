@@ -15,6 +15,7 @@ import {
   PlatformSettings,
   PlatformSettingsSchema,
 } from '../admin/schemas/platform-settings.schema';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import {
       { name: PlatformSettings.name, schema: PlatformSettingsSchema },
     ]),
     AuthModule,
+    PaymentsModule,
   ],
   controllers: [InvestorController, PlatformController],
   providers: [InvestorService],

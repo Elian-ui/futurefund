@@ -11,6 +11,9 @@ export class User {
   @Prop({ required: true, unique: true, index: true })
   email: string;
 
+  @Prop({ required: false, index: true })
+  phoneNumber?: string;
+
   @Prop({ required: false, select: false })
   passwordHash: string;
 
@@ -66,6 +69,15 @@ export class User {
 
   @Prop({ required: false })
   lockedUntil?: Date;
+
+  @Prop({ required: false, index: true })
+  deletedAt?: Date;
+
+  @Prop({ type: Types.ObjectId, ref: 'User', required: false })
+  deletedBy?: Types.ObjectId;
+
+  @Prop({ required: false })
+  deletionReason?: string;
 }
 
 export const UserSchema = SchemaFactory.createForClass(User);

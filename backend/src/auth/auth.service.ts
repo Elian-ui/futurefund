@@ -33,6 +33,7 @@ export class AuthService {
         id: user.id,
         name: user.name,
         email: user.email,
+        phoneNumber: user.phoneNumber,
         roles,
         balance: user.balance,
         totalInvested: user.totalInvested,
@@ -45,11 +46,18 @@ export class AuthService {
     };
   }
 
-  async register(name: string, email: string, password: string, referralCode?: string) {
-    if (!name || !email || !password) {
-      throw new BadRequestException('Name, email and password are required');
+  async register(
+    name: string,
+    email: string,
+    password: string,
+    phoneNumber: string,
+    referralCode?: string,
+  ) {
+    if (!name || !email || !password || !phoneNumber) {
+      throw new BadRequestException('Name, email, phone number and password are required');
     }
     const normalizedEmail = email.trim().toLowerCase();
+    const normalizedPhoneNumber = this.normalizeInternationalPhoneNumber(phoneNumber);
     const existing = await this.userModel.findOne({ email: normalizedEmail }).exec();
     if (existing) {
       throw new BadRequestException('An account with this email already exists');
@@ -64,6 +72,7 @@ export class AuthService {
     const user = new this.userModel({
       name,
       email: normalizedEmail,
+      phoneNumber: normalizedPhoneNumber,
       passwordHash,
       roles,
       balance: 0,
@@ -107,6 +116,9 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException('Invalid email or password');
     }
+    if (user.deletedAt) {
+      throw new UnauthorizedException('This account is not active');
+    }
     if (user.lockedUntil && user.lockedUntil.getTime() > Date.now()) {
       throw new UnauthorizedException('Account is temporarily locked. Try again later.');
     }
@@ -145,6 +157,9 @@ export class AuthService {
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
+    if (user.deletedAt) {
+      throw new UnauthorizedException('This account is not active');
+    }
     if (!user.referralCode) {
       user.referralCode = await this.generateReferralCode(user.name, user.email);
       await user.save();
@@ -153,6 +168,7 @@ export class AuthService {
       id: user.id,
       name: user.name,
       email: user.email,
+      phoneNumber: user.phoneNumber,
       roles: user.roles?.length ? user.roles : ['investor'],
       balance: user.balance,
       totalInvested: user.totalInvested,
@@ -290,6 +306,17 @@ export class AuthService {
       throw new BadRequestException('Invalid referral code');
     }
     return referrer;
+  }
+
+  private normalizeInternationalPhoneNumber(phoneNumber: string) {
+    const compact = phoneNumber.trim().replace(/[\s().-]/g, '');
+    const normalized = compact.startsWith('00') ? `+${compact.slice(2)}` : compact;
+
+    if (!/^\+[1-9]\d{6,14}$/.test(normalized)) {
+      throw new BadRequestException('Enter a valid phone number with country code');
+    }
+
+    return normalized;
   }
 
   private hashToken(token: string) {

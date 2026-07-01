@@ -22,9 +22,15 @@ export class InvestorController {
   @Post('deposit')
   deposit(
     @Req() req: any,
-    @Body() body: { amount: number; method: string; reference?: string },
+    @Body() body: { amount: number; method: string; reference?: string; phoneNumber?: string },
   ) {
-    return this.investorService.deposit(req.user.userId, body.amount, body.method, body.reference);
+    return this.investorService.deposit(
+      req.user.userId,
+      body.amount,
+      body.method,
+      body.reference,
+      body.phoneNumber,
+    );
   }
 
   @Post('withdraw')

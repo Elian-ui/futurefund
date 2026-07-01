@@ -16,6 +16,7 @@ import {
   PlatformSettings,
   PlatformSettingsDocument,
 } from '../admin/schemas/platform-settings.schema';
+import { PesajetService } from '../payments/pesajet.service';
 
 export const INVESTMENT_PACKAGES = [
   {
@@ -54,6 +55,12 @@ export interface PayoutRunResult {
   principalReturned: number;
 }
 
+export interface MobileMoneyPollResult {
+  checked: number;
+  approved: number;
+  rejected: number;
+}
+
 @Injectable()
 export class InvestorService {
   constructor(
@@ -67,6 +74,7 @@ export class InvestorService {
     @InjectModel(PlatformSettings.name)
     private readonly settingsModel: Model<PlatformSettingsDocument>,
     private readonly configService: ConfigService,
+    private readonly pesajetService: PesajetService,
   ) {}
 
   async onModuleInit() {
@@ -76,6 +84,9 @@ export class InvestorService {
   private async getUserById(userId: string): Promise<UserDocument> {
     const user = await this.userModel.findById(userId).exec();
     if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    if (user.deletedAt) {
       throw new NotFoundException('User not found');
     }
     return user;
@@ -88,6 +99,8 @@ export class InvestorService {
       amountPaid: 0,
       principalReturned: 0,
     };
+    if (user.deletedAt) return summary;
+
     const investments = await this.investmentModel
       .find({ userId: user._id, status: 'active' })
       .exec();
@@ -190,7 +203,13 @@ export class InvestorService {
     return user;
   }
 
-  async deposit(userId: string, amount: number, method: string, reference?: string): Promise<Transaction> {
+  async deposit(
+    userId: string,
+    amount: number,
+    method: string,
+    reference?: string,
+    phoneNumber?: string,
+  ): Promise<Transaction> {
     const settings = await this.getPlatformSettings();
     if (!settings.depositsEnabled) {
       throw new BadRequestException('Deposits are currently disabled');
@@ -204,6 +223,40 @@ export class InvestorService {
     }
     const user = await this.getUserById(userId);
     await this.processAccruedPayouts(user);
+    const paymentReference = reference?.trim() || this.createPaymentReference('DEP', user._id.toString());
+    let externalPaymentId: string | undefined;
+    let externalPaymentStatus: string | undefined;
+    let externalPaymentProvider: string | undefined;
+    let externalPaymentReference: string | undefined;
+    let externalProviderReference: string | undefined;
+    let externalPaymentFee: number | undefined;
+    let externalFailureReason: string | undefined;
+
+    if (this.isMobileMoney(paymentMethod)) {
+      this.assertMobileMoneyAvailableForUser(user, paymentMethod);
+      const normalizedPhone = this.normalizeUgandanPhoneNumber(phoneNumber);
+      if (normalizedPhone !== user.phoneNumber) {
+        throw new BadRequestException('Mobile money deposits must use your registered phone number');
+      }
+      const response = await this.pesajetService.createPayment({
+        type: 'COLLECTION',
+        amount: this.toUgxAmount(amount),
+        currency: 'UGX',
+        phoneNumber: normalizedPhone,
+        provider: this.mobileMoneyProvider(paymentMethod),
+      });
+
+      externalPaymentId = this.paymentResponseValue(response, ['id', 'transactionId', 'paymentId']);
+      if (!externalPaymentId) {
+        throw new BadRequestException('PesaJet did not return a transaction id');
+      }
+      externalPaymentStatus = this.paymentResponseValue(response, ['status', 'state']);
+      externalPaymentProvider = paymentMethod.provider;
+      externalPaymentReference = paymentReference;
+      externalProviderReference = this.paymentResponseValue(response, ['providerReference']);
+      externalPaymentFee = this.paymentResponseNumber(response, ['fee']);
+      externalFailureReason = this.paymentResponseValue(response, ['failureReason']);
+    }
 
     const tx = new this.transactionModel({
       userId: user._id,
@@ -211,7 +264,14 @@ export class InvestorService {
       status: 'pending',
       amount,
       method: paymentMethod.method,
-      reference,
+      reference: paymentReference,
+      externalPaymentId,
+      externalPaymentStatus,
+      externalPaymentProvider,
+      externalPaymentReference,
+      externalProviderReference,
+      externalPaymentFee,
+      externalFailureReason,
       description: `Deposit request via ${paymentMethod.method}`,
       timestamp: new Date(),
     });
@@ -219,7 +279,9 @@ export class InvestorService {
     await this.createNotification(
       user._id,
       'Deposit submitted',
-      `Your $${amount.toFixed(2)} deposit request is pending admin review.`,
+      this.isMobileMoney(paymentMethod)
+        ? `Your $${amount.toFixed(2)} mobile money deposit is being confirmed automatically.`
+        : `Your $${amount.toFixed(2)} deposit request is pending admin review.`,
       'info',
     );
 
@@ -237,6 +299,9 @@ export class InvestorService {
       throw new BadRequestException('Withdrawals are currently disabled');
     }
     const paymentMethod = this.resolvePaymentMethod(settings.paymentMethods, method, 'withdrawal');
+    if (this.isMobileMoney(paymentMethod)) {
+      address = this.normalizeUgandanPhoneNumber(address);
+    }
     if (amount < settings.minWithdrawal) {
       throw new BadRequestException(`Minimum withdrawal is $${settings.minWithdrawal}`);
     }
@@ -244,8 +309,43 @@ export class InvestorService {
       throw new BadRequestException(`Maximum withdrawal is $${settings.maxWithdrawal}`);
     }
     const user = await this.getProfile(userId);
+    if (this.isMobileMoney(paymentMethod)) {
+      this.assertMobileMoneyAvailableForUser(user, paymentMethod);
+      if (address !== user.phoneNumber) {
+        throw new BadRequestException('Mobile money withdrawals must use your registered phone number');
+      }
+    }
     if (user.balance < amount) {
       throw new BadRequestException('Insufficient balance');
+    }
+
+    let externalPaymentId: string | undefined;
+    let externalPaymentStatus: string | undefined;
+    let externalPaymentProvider: string | undefined;
+    let externalProviderReference: string | undefined;
+    let externalPaymentFee: number | undefined;
+    let externalFailureReason: string | undefined;
+    const externalPaymentReference = this.createPaymentReference('WDR', user._id.toString());
+
+    if (this.isMobileMoney(paymentMethod)) {
+      const response = await this.pesajetService.createPayment({
+        type: 'DISBURSEMENT',
+        amount: this.toUgxAmount(amount),
+        currency: 'UGX',
+        phoneNumber: address,
+        provider: this.mobileMoneyProvider(paymentMethod),
+        reference: externalPaymentReference,
+        description: `FutureFund wallet withdrawal for ${user.email}`,
+      });
+      externalPaymentId = this.paymentResponseValue(response, ['id', 'transactionId', 'paymentId']);
+      if (!externalPaymentId) {
+        throw new BadRequestException('PesaJet did not return a transaction id');
+      }
+      externalPaymentStatus = this.paymentResponseValue(response, ['status', 'state']);
+      externalPaymentProvider = paymentMethod.provider;
+      externalProviderReference = this.paymentResponseValue(response, ['providerReference']);
+      externalPaymentFee = this.paymentResponseNumber(response, ['fee']);
+      externalFailureReason = this.paymentResponseValue(response, ['failureReason']);
     }
 
     user.balance -= amount;
@@ -258,6 +358,13 @@ export class InvestorService {
       amount,
       method: paymentMethod.method,
       destination: address,
+      externalPaymentId,
+      externalPaymentStatus,
+      externalPaymentProvider,
+      externalPaymentReference,
+      externalProviderReference,
+      externalPaymentFee,
+      externalFailureReason,
       description: `Withdrawal request to ${address} (${paymentMethod.method})`,
       timestamp: new Date(),
     });
@@ -265,7 +372,9 @@ export class InvestorService {
     await this.createNotification(
       user._id,
       'Withdrawal submitted',
-      `Your $${amount.toFixed(2)} withdrawal request is pending admin review.`,
+      this.isMobileMoney(paymentMethod)
+        ? `Your $${amount.toFixed(2)} mobile money withdrawal is being processed automatically.`
+        : `Your $${amount.toFixed(2)} withdrawal request is pending admin review.`,
       'info',
     );
 
@@ -279,6 +388,95 @@ export class InvestorService {
       .find({ userId: user._id })
       .sort({ createdAt: -1 })
       .exec();
+  }
+
+  async processMobileMoneyTransactions(limit = 50): Promise<MobileMoneyPollResult> {
+    const summary: MobileMoneyPollResult = { checked: 0, approved: 0, rejected: 0 };
+    const transactions = await this.transactionModel
+      .find({
+        type: { $in: ['deposit', 'withdrawal'] },
+        status: 'pending',
+        externalPaymentId: { $exists: true, $ne: '' },
+        externalPaymentProvider: { $exists: true, $ne: '' },
+      })
+      .sort({ timestamp: 1 })
+      .limit(limit)
+      .exec();
+
+    for (const tx of transactions) {
+      summary.checked += 1;
+      let response: Record<string, unknown>;
+      try {
+        response = await this.pesajetService.getPayment(tx.externalPaymentId as string);
+      } catch {
+        continue;
+      }
+
+      const providerStatus = this.paymentResponseValue(response, ['status', 'state']);
+      if (providerStatus) {
+        tx.externalPaymentStatus = providerStatus;
+      }
+      tx.externalProviderReference =
+        this.paymentResponseValue(response, ['providerReference']) ?? tx.externalProviderReference;
+      tx.externalPaymentFee =
+        this.paymentResponseNumber(response, ['fee']) ?? tx.externalPaymentFee;
+      tx.externalFailureReason =
+        this.paymentResponseValue(response, ['failureReason']) ?? tx.externalFailureReason;
+
+      const normalizedStatus = providerStatus?.toLowerCase();
+      if (this.isProviderSuccess(normalizedStatus)) {
+        const user = await this.userModel.findById(tx.userId).exec();
+        if (!user || user.deletedAt) continue;
+
+        if (tx.type === 'deposit') {
+          user.balance += tx.amount;
+          await this.creditReferralBonus(user, tx.amount);
+          await user.save();
+          tx.description = `Deposit approved via ${tx.method ?? 'mobile money'}`;
+        } else {
+          tx.description = `Withdrawal approved to ${tx.destination ?? 'registered number'} (${tx.method ?? 'mobile money'})`;
+        }
+
+        tx.status = 'approved';
+        tx.reviewedAt = new Date();
+        tx.reviewNote = 'Automatically confirmed by PesaJet status polling';
+        await tx.save();
+        await this.createNotification(
+          tx.userId,
+          tx.type === 'deposit' ? 'Deposit approved' : 'Withdrawal approved',
+          `Your $${tx.amount.toFixed(2)} ${tx.type} was confirmed automatically.`,
+          'success',
+        );
+        summary.approved += 1;
+      } else if (this.isProviderFailure(normalizedStatus)) {
+        const user = await this.userModel.findById(tx.userId).exec();
+        if (tx.type === 'withdrawal' && user && !user.deletedAt) {
+          user.balance += tx.amount;
+          await user.save();
+        }
+
+        tx.status = 'rejected';
+        tx.reviewedAt = new Date();
+        tx.reviewNote = tx.externalFailureReason
+          ? `Automatically rejected by PesaJet: ${tx.externalFailureReason}`
+          : `Automatically rejected by PesaJet status: ${providerStatus ?? 'unknown'}`;
+        tx.description = `${tx.type === 'deposit' ? 'Deposit' : 'Withdrawal'} rejected`;
+        await tx.save();
+        await this.createNotification(
+          tx.userId,
+          tx.type === 'deposit' ? 'Deposit rejected' : 'Withdrawal rejected',
+          tx.externalFailureReason
+            ? `Your $${tx.amount.toFixed(2)} ${tx.type} could not be confirmed: ${tx.externalFailureReason}`
+            : `Your $${tx.amount.toFixed(2)} ${tx.type} could not be confirmed by mobile money.`,
+          'warning',
+        );
+        summary.rejected += 1;
+      } else {
+        await tx.save();
+      }
+    }
+
+    return summary;
   }
 
   async buyPackage(userId: string, packageId: string, amount: number): Promise<Investment> {
@@ -430,6 +628,15 @@ export class InvestorService {
         { $set: { paymentMethods: DEFAULT_PAYMENT_METHODS } },
       )
       .exec();
+
+    for (const paymentMethod of DEFAULT_PAYMENT_METHODS) {
+      await this.settingsModel
+        .updateOne(
+          { key: 'default', paymentMethods: { $not: { $elemMatch: { id: paymentMethod.id } } } },
+          { $push: { paymentMethods: paymentMethod } },
+        )
+        .exec();
+    }
   }
 
   private referralBonusAmount() {
@@ -439,15 +646,37 @@ export class InvestorService {
   private publicPaymentMethods(methods: PaymentMethod[] = DEFAULT_PAYMENT_METHODS) {
     return methods
       .filter((method) => method.enabled)
-      .map(({ id, label, method, network, address, depositEnabled, withdrawalEnabled }) => ({
+      .sort((first, second) => this.paymentMethodPriority(first) - this.paymentMethodPriority(second))
+      .map(({
         id,
         label,
         method,
         network,
         address,
+        channel,
+        provider,
+        currency,
+        requiresPhoneNumber,
+        depositEnabled,
+        withdrawalEnabled,
+      }) => ({
+        id,
+        label,
+        method,
+        network,
+        address,
+        channel,
+        provider,
+        currency,
+        requiresPhoneNumber,
         depositEnabled,
         withdrawalEnabled,
       }));
+  }
+
+  private paymentMethodPriority(method: PaymentMethod) {
+    if (method.channel === 'mobile_money') return 0;
+    return 10;
   }
 
   private resolvePaymentMethod(
@@ -475,6 +704,126 @@ export class InvestorService {
     }
 
     return method;
+  }
+
+  private isMobileMoney(method: PaymentMethod) {
+    return method.channel === 'mobile_money';
+  }
+
+  private assertMobileMoneyAvailableForUser(user: UserDocument, method: PaymentMethod) {
+    if (!/^\+256\d{9}$/.test(user.phoneNumber ?? '')) {
+      throw new BadRequestException('Mobile money is currently available only for +256 Uganda numbers');
+    }
+    const provider = this.mobileMoneyProviderForPhone(user.phoneNumber);
+    if (!provider || provider !== method.provider) {
+      throw new BadRequestException(`Your registered number is not eligible for ${method.label}`);
+    }
+  }
+
+  private mobileMoneyProviderForPhone(phoneNumber?: string) {
+    const prefix = phoneNumber?.slice(4, 6);
+    if (prefix && ['76', '77', '78', '39'].includes(prefix)) return 'mtn';
+    if (prefix && ['70', '75', '74', '20'].includes(prefix)) return 'airtel';
+    return undefined;
+  }
+
+  private mobileMoneyProvider(method: PaymentMethod) {
+    if (!method.provider) {
+      throw new BadRequestException('Mobile money provider is not configured');
+    }
+    return method.provider;
+  }
+
+  private normalizeUgandanPhoneNumber(phoneNumber?: string) {
+    const cleaned = phoneNumber?.trim().replace(/\s+/g, '') ?? '';
+    const normalized = cleaned.startsWith('0')
+      ? `+256${cleaned.slice(1)}`
+      : cleaned.startsWith('256')
+        ? `+${cleaned}`
+        : cleaned;
+
+    if (!/^\+256\d{9}$/.test(normalized)) {
+      throw new BadRequestException('Enter a valid Ugandan phone number, for example +256777652457');
+    }
+
+    return normalized;
+  }
+
+  private createPaymentReference(prefix: 'DEP' | 'WDR', userId: string) {
+    return `FF-${prefix}-${Date.now()}-${userId.slice(-6)}`.toUpperCase();
+  }
+
+  private toUgxAmount(amountUsd: number) {
+    const rate = Number(this.configService.get<string>('UGX_PER_USD') ?? 3720);
+    const ugx = Math.round(amountUsd * (Number.isFinite(rate) && rate > 0 ? rate : 3720));
+    return Math.max(1, ugx);
+  }
+
+  private paymentResponseValue(response: Record<string, unknown>, keys: string[]) {
+    for (const key of keys) {
+      const value = response[key] ?? (response.data as Record<string, unknown> | undefined)?.[key];
+      if (value !== undefined && value !== null) return String(value);
+    }
+    return undefined;
+  }
+
+  private paymentResponseNumber(response: Record<string, unknown>, keys: string[]) {
+    const value = this.paymentResponseValue(response, keys);
+    if (value === undefined) return undefined;
+    const numberValue = Number(value);
+    return Number.isFinite(numberValue) ? numberValue : undefined;
+  }
+
+  private isProviderSuccess(status?: string) {
+    return Boolean(
+      status &&
+        ['success', 'successful', 'completed', 'complete', 'approved', 'paid', 'processed'].includes(status),
+    );
+  }
+
+  private isProviderFailure(status?: string) {
+    return Boolean(
+      status &&
+        ['failed', 'failure', 'rejected', 'cancelled', 'canceled', 'expired', 'declined'].includes(status),
+    );
+  }
+
+  private async creditReferralBonus(user: UserDocument, qualifyingDepositAmount: number) {
+    if (!user.referredBy || user.referralRewardPaid) return;
+
+    const previousApprovedDeposits = await this.transactionModel
+      .countDocuments({ userId: user._id, type: 'deposit', status: 'approved' })
+      .exec();
+    if (previousApprovedDeposits > 0) return;
+
+    const bonusAmount = this.referralBonusAmount();
+    if (bonusAmount <= 0) return;
+
+    const referrer = await this.userModel.findById(user.referredBy).exec();
+    if (!referrer || referrer.deletedAt) return;
+
+    referrer.balance += bonusAmount;
+    referrer.referralEarnings = (referrer.referralEarnings ?? 0) + bonusAmount;
+    await referrer.save();
+
+    user.referralRewardPaid = true;
+
+    await this.transactionModel.create({
+      userId: referrer._id,
+      type: 'referral_bonus',
+      status: 'completed',
+      amount: bonusAmount,
+      description: `Referral bonus for ${user.name}'s first approved deposit`,
+      reference: user._id.toString(),
+      timestamp: new Date(),
+    });
+
+    await this.createNotification(
+      referrer._id,
+      'Referral bonus credited',
+      `$${bonusAmount.toFixed(2)} was credited after ${user.name}'s first deposit was approved.`,
+      'success',
+    );
   }
 
   private async createNotification(

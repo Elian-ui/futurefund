@@ -6,17 +6,89 @@ import { useCurrency } from "../context/CurrencyContext";
 import CurrencyInput from "../components/CurrencyInput";
 import { ArrowDownLeft, ArrowUpRight, Copy, Check, ShieldAlert, Sparkles, QrCode } from "lucide-react";
 import { useRouter } from "next/navigation";
+import type { PaymentMethod } from "../context/useFutureFund";
+
+function paymentMethodPriority(method: PaymentMethod) {
+  if (method.channel === "mobile_money") return 0;
+  return 10;
+}
+
+function isMobileMoneyAvailable(method: PaymentMethod, phoneNumber?: string) {
+  if (method.channel !== "mobile_money") return true;
+  return mobileMoneyProviderForPhone(phoneNumber) === method.provider;
+}
+
+function normalizeUgandanPhoneInput(phoneNumber: string) {
+  const cleaned = phoneNumber.trim().replace(/\s+/g, "");
+  if (cleaned.startsWith("0")) return `+256${cleaned.slice(1)}`;
+  if (cleaned.startsWith("256")) return `+${cleaned}`;
+  return cleaned;
+}
+
+function mobileMoneyProviderForPhone(phoneNumber?: string) {
+  const normalized = normalizeUgandanPhoneInput(phoneNumber ?? "");
+  if (!/^\+256\d{9}$/.test(normalized)) return undefined;
+
+  const prefix = normalized.slice(4, 6);
+  if (["76", "77", "78", "39"].includes(prefix)) return "mtn";
+  if (["70", "75", "74", "20"].includes(prefix)) return "airtel";
+  return undefined;
+}
+
+function mobileMoneyPhoneError(method: PaymentMethod | undefined, phoneNumber: string) {
+  if (!method?.requiresPhoneNumber) return null;
+
+  const normalized = normalizeUgandanPhoneInput(phoneNumber);
+  if (!/^\+256\d{9}$/.test(normalized)) {
+    return "Enter a valid Uganda number, for example +256771234567.";
+  }
+
+  const prefix = normalized.slice(4, 6);
+  if (method.provider === "mtn" && !["76", "77", "78", "39"].includes(prefix)) {
+    return "MTN Mobile Money numbers should start with 076, 077, 078, or 039.";
+  }
+  if (method.provider === "airtel" && !["70", "75", "74", "20"].includes(prefix)) {
+    return "Airtel Money numbers should start with 070, 075, 074, or 020.";
+  }
+
+  return null;
+}
+
+function ProviderLogo({ method }: { method?: PaymentMethod }) {
+  if (method?.provider === "mtn") {
+    return (
+      <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#ffd100] text-[10px] font-black text-black shadow-sm">
+        MTN
+      </span>
+    );
+  }
+
+  if (method?.provider === "airtel") {
+    return (
+      <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#e60012] text-[10px] font-black text-white shadow-sm">
+        airtel
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-card border border-card-border text-[10px] font-black text-primary">
+      USDT
+    </span>
+  );
+}
 
 export default function WalletPage() {
   const router = useRouter();
   const { user, deposit, withdraw, isLoaded, platformSettings } = useFutureFund();
   const { format, currency, toLocal, toUSD, rates } = useCurrency();
   const [activeTab, setActiveTab] = useState<"deposit" | "withdraw">("deposit");
-  const [depMethod, setDepMethod] = useState("USDT_TRC20");
-  const [wdrMethod, setWdrMethod] = useState("USDT_TRC20");
+  const [depMethod, setDepMethod] = useState("MTN_MOBILE_MONEY_UG");
+  const [wdrMethod, setWdrMethod] = useState("MTN_MOBILE_MONEY_UG");
   const [depAmount, setDepAmount] = useState<number>(500);
   const [wdrAmount, setWdrAmount] = useState<number>(100);
   const [destination, setDestination] = useState("");
+  const [depositPhoneNumber, setDepositPhoneNumber] = useState("");
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<{ success: boolean; message: string } | null>(null);
@@ -40,10 +112,31 @@ export default function WalletPage() {
     usdWdrAmount > withdrawalMaxUsd ||
     user.balance < usdWdrAmount ||
     !canWithdrawByBalance;
-  const depositMethods = platformSettings.paymentMethods.filter((method) => method.depositEnabled);
-  const withdrawalMethods = platformSettings.paymentMethods.filter((method) => method.withdrawalEnabled);
+  const depositMethods = platformSettings.paymentMethods
+    .filter((method) => method.depositEnabled && isMobileMoneyAvailable(method, user.phoneNumber))
+    .sort((first, second) => paymentMethodPriority(first) - paymentMethodPriority(second));
+  const withdrawalMethods = platformSettings.paymentMethods
+    .filter((method) => method.withdrawalEnabled && isMobileMoneyAvailable(method, user.phoneNumber))
+    .sort((first, second) => paymentMethodPriority(first) - paymentMethodPriority(second));
   const selectedDepositMethod = depositMethods.find((method) => method.id === depMethod) ?? depositMethods[0];
   const selectedWithdrawalMethod = withdrawalMethods.find((method) => method.id === wdrMethod) ?? withdrawalMethods[0];
+  const depositNeedsPhone = Boolean(selectedDepositMethod?.requiresPhoneNumber);
+  const withdrawalNeedsPhone = Boolean(selectedWithdrawalMethod?.requiresPhoneNumber);
+  const registeredMobileMoneyNumber = /^\+256\d{9}$/.test(user.phoneNumber ?? "")
+    ? user.phoneNumber ?? ""
+    : "";
+
+  useEffect(() => {
+    const ugandanPhoneNumber = user.phoneNumber && /^\+256\d{9}$/.test(user.phoneNumber)
+      ? user.phoneNumber
+      : undefined;
+    if (ugandanPhoneNumber) {
+      setDepositPhoneNumber(ugandanPhoneNumber);
+    }
+    if (ugandanPhoneNumber && withdrawalNeedsPhone) {
+      setDestination(ugandanPhoneNumber);
+    }
+  }, [depositPhoneNumber, destination, user.phoneNumber, withdrawalNeedsPhone]);
 
   useEffect(() => {
     if (depositMethods.length > 0 && !depositMethods.some((method) => method.id === depMethod)) {
@@ -127,16 +220,29 @@ export default function WalletPage() {
       setLoading(false);
       return;
     }
+    if (depositNeedsPhone && !registeredMobileMoneyNumber) {
+      setFeedback({ success: false, message: "Your registered number is not eligible for this mobile money method." });
+      setLoading(false);
+      return;
+    }
+    const depositPhoneError = mobileMoneyPhoneError(selectedDepositMethod, registeredMobileMoneyNumber);
+    if (depositPhoneError) {
+      setFeedback({ success: false, message: depositPhoneError });
+      setLoading(false);
+      return;
+    }
 
     try {
-      const res = await deposit(usdDepAmount, selectedDepositMethod.id);
-      if (res) {
+      const res = await deposit(usdDepAmount, selectedDepositMethod.id, {
+        phoneNumber: depositNeedsPhone ? registeredMobileMoneyNumber : undefined,
+      });
+      if (res.success) {
         setFeedback({ success: true, message: `Deposit request for ${format(usdDepAmount)} submitted for admin review.` });
         setTimeout(() => {
           router.push("/dashboard");
         }, 1500);
       } else {
-        setFeedback({ success: false, message: "Invalid deposit amount." });
+        setFeedback({ success: false, message: res.error || "Failed to process deposit." });
       }
     } catch (e) {
       setFeedback({ success: false, message: "Failed to process deposit connection." });
@@ -168,9 +274,22 @@ export default function WalletPage() {
       setLoading(false);
       return;
     }
+    const withdrawalPhoneError = mobileMoneyPhoneError(
+      selectedWithdrawalMethod,
+      withdrawalNeedsPhone ? registeredMobileMoneyNumber : destination,
+    );
+    if (withdrawalPhoneError) {
+      setFeedback({ success: false, message: withdrawalPhoneError });
+      setLoading(false);
+      return;
+    }
 
     try {
-      const res = await withdraw(usdWdrAmount, destination, selectedWithdrawalMethod.id);
+      const res = await withdraw(
+        usdWdrAmount,
+        withdrawalNeedsPhone ? registeredMobileMoneyNumber : destination,
+        selectedWithdrawalMethod.id,
+      );
       if (res.success) {
         setFeedback({ success: true, message: `Withdrawal request for ${format(usdWdrAmount)} submitted for admin review.` });
         setTimeout(() => {
@@ -245,14 +364,26 @@ export default function WalletPage() {
                       key={m.id}
                       type="button"
                       onClick={() => setDepMethod(m.id)}
-                      className={`py-2.5 rounded-xl border text-xs font-bold transition-colors cursor-pointer ${
+                      className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-xs font-bold transition-colors cursor-pointer ${
                         depMethod === m.id
                           ? "border-primary bg-primary/10 text-white"
                           : "border-card-border bg-card/40 text-foreground/70 hover:bg-card"
                       }`}
                     >
-                      {m.label}
-                      {m.network && <span className="ml-1 text-foreground/45">({m.network})</span>}
+                      <ProviderLogo method={m} />
+                      <span className="min-w-0">
+                        <span className="block truncate">{m.label}</span>
+                        {(m.network || m.currency) && (
+                          <span className="block text-[10px] text-foreground/45">
+                            {m.network ?? m.currency}
+                          </span>
+                        )}
+                      </span>
+                      {m.channel === "mobile_money" && (
+                        <span className="ml-auto rounded-full border border-primary/20 bg-primary/10 px-2 py-1 text-[10px] text-primary">
+                          Priority
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -262,6 +393,33 @@ export default function WalletPage() {
                   </p>
                 )}
               </div>
+
+              {depositNeedsPhone && (
+                <div>
+                  <label className="block text-xs font-semibold text-foreground/75 uppercase tracking-wider mb-2">
+                    Mobile Money Number
+                  </label>
+                  <div className="relative rounded-2xl border border-card-border bg-card/60 p-3 flex items-center">
+                    <input
+                      type="tel"
+                      inputMode="tel"
+                      required
+                      readOnly
+                      value={registeredMobileMoneyNumber}
+                      onChange={(e) => setDepositPhoneNumber(e.target.value)}
+                      placeholder="+256777652457"
+                      className="bg-transparent border-0 text-white placeholder-foreground/30 focus:outline-none focus:ring-0 w-full text-base font-medium"
+                    />
+                  </div>
+                  <p className="mt-2 text-[11px] leading-relaxed text-foreground/45">
+                    {selectedDepositMethod?.provider === "mtn"
+                      ? "MTN prefixes: 076, 077, 078, 039."
+                      : selectedDepositMethod?.provider === "airtel"
+                        ? "Airtel prefixes: 070, 075, 074, 020."
+                        : "Use a Uganda +256 mobile money number."}
+                  </p>
+                </div>
+              )}
 
               {/* Amount input */}
               <div>
@@ -298,7 +456,13 @@ export default function WalletPage() {
 
               <button
                 type="submit"
-                disabled={loading || !platformSettings.depositsEnabled || depositAmountInvalid || !selectedDepositMethod}
+                disabled={
+                  loading ||
+                  !platformSettings.depositsEnabled ||
+                  depositAmountInvalid ||
+                  !selectedDepositMethod ||
+                  (depositNeedsPhone && !registeredMobileMoneyNumber)
+                }
                 className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-accent py-3.5 text-sm font-bold text-background shadow-md shadow-primary/20 hover:opacity-95 disabled:opacity-50 transition-opacity cursor-pointer mt-6"
               >
                 {loading ? (
@@ -328,14 +492,26 @@ export default function WalletPage() {
                       key={m.id}
                       type="button"
                       onClick={() => setWdrMethod(m.id)}
-                      className={`py-2.5 rounded-xl border text-xs font-bold transition-colors cursor-pointer ${
+                      className={`flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left text-xs font-bold transition-colors cursor-pointer ${
                         wdrMethod === m.id
                           ? "border-primary bg-primary/10 text-white"
                           : "border-card-border bg-card/40 text-foreground/70 hover:bg-card"
                       }`}
                     >
-                      {m.label}
-                      {m.network && <span className="ml-1 text-foreground/45">({m.network})</span>}
+                      <ProviderLogo method={m} />
+                      <span className="min-w-0">
+                        <span className="block truncate">{m.label}</span>
+                        {(m.network || m.currency) && (
+                          <span className="block text-[10px] text-foreground/45">
+                            {m.network ?? m.currency}
+                          </span>
+                        )}
+                      </span>
+                      {m.channel === "mobile_money" && (
+                        <span className="ml-auto rounded-full border border-primary/20 bg-primary/10 px-2 py-1 text-[10px] text-primary">
+                          Priority
+                        </span>
+                      )}
                     </button>
                   ))}
                 </div>
@@ -355,12 +531,26 @@ export default function WalletPage() {
                   <input
                     type="text"
                     required
-                    value={destination}
+                    readOnly={withdrawalNeedsPhone}
+                    value={withdrawalNeedsPhone ? registeredMobileMoneyNumber : destination}
                     onChange={(e) => setDestination(e.target.value)}
-                    placeholder={`${selectedWithdrawalMethod?.method ?? "Wallet"} address destination`}
+                    placeholder={
+                      withdrawalNeedsPhone
+                        ? "+256777652457"
+                        : `${selectedWithdrawalMethod?.method ?? "Wallet"} address destination`
+                    }
                     className="bg-transparent border-0 text-white placeholder-foreground/30 focus:outline-none focus:ring-0 w-full text-base font-medium sm:text-sm"
                   />
                 </div>
+                {withdrawalNeedsPhone && (
+                  <p className="mt-2 text-[11px] leading-relaxed text-foreground/45">
+                    {selectedWithdrawalMethod?.provider === "mtn"
+                      ? "MTN prefixes: 076, 077, 078, 039."
+                      : selectedWithdrawalMethod?.provider === "airtel"
+                        ? "Airtel prefixes: 070, 075, 074, 020."
+                        : "Use a Uganda +256 mobile money number."}
+                  </p>
+                )}
               </div>
 
               {/* Amount input */}
@@ -400,7 +590,13 @@ export default function WalletPage() {
 
               <button
                 type="submit"
-                disabled={loading || !platformSettings.withdrawalsEnabled || withdrawalAmountInvalid || !destination.trim() || !selectedWithdrawalMethod}
+                disabled={
+                  loading ||
+                  !platformSettings.withdrawalsEnabled ||
+                  withdrawalAmountInvalid ||
+                  !(withdrawalNeedsPhone ? registeredMobileMoneyNumber : destination.trim()) ||
+                  !selectedWithdrawalMethod
+                }
                 className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-accent py-3.5 text-sm font-bold text-background shadow-md shadow-primary/20 hover:opacity-95 disabled:opacity-50 transition-opacity cursor-pointer mt-6"
               >
                 {loading ? (
@@ -417,41 +613,63 @@ export default function WalletPage() {
         <div className="md:col-span-5 flex flex-col justify-center bg-card/30 rounded-3xl border border-card-border p-6 text-center space-y-6">
           {activeTab === "deposit" ? (
             <>
-              <div className="space-y-4">
-                <span className="block text-xs font-bold text-white uppercase tracking-wider">
-                  Deposit Destination QR Code
-                </span>
-
-                {/* Custom Simulated SVG QR Code */}
-                <div className="h-40 w-40 mx-auto bg-white rounded-2xl p-3 flex items-center justify-center relative shadow-md">
-                  <QrCode className="h-full w-full text-background" />
-                  {/* Tiny emerald center glow badge */}
-                  <div className="absolute inset-1/2 transform -translate-x-1/2 -translate-y-1/2 h-8 w-8 rounded-lg bg-card border border-primary/20 flex items-center justify-center">
-                    <span className="text-[10px] font-black text-primary">FF</span>
+              {depositNeedsPhone ? (
+                <div className="space-y-4">
+                  <div className="mx-auto h-12 w-12 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-primary">
+                    <ProviderLogo method={selectedDepositMethod} />
                   </div>
-                </div>
-
-                <div className="space-y-2 pt-2">
-                  <span className="block text-[10px] text-foreground/50 font-bold uppercase">
-                    Network Address details
-                  </span>
-                  <div className="flex items-center justify-between rounded-xl bg-card border border-card-border px-3 py-2 text-xs">
-                    <span className="text-white font-mono truncate max-w-[150px]">
-                      {selectedDepositMethod?.address ?? "No address configured"}
+                  <h4 className="text-sm font-bold text-white">Mobile Money Collection</h4>
+                  <p className="text-xs text-foreground/60 leading-relaxed">
+                    A {selectedDepositMethod?.label} payment prompt will be sent to your phone in UGX. The wallet ledger keeps the credited value in USD.
+                  </p>
+                  <div className="rounded-xl border border-card-border bg-card/60 p-4 text-left text-[11px] text-foreground/50 space-y-2 leading-relaxed">
+                    <span className="block font-bold text-white uppercase text-[10px] tracking-wider mb-1">
+                      Collection Details
                     </span>
-                    <button
-                      onClick={handleCopy}
-                      className="p-1 rounded-lg hover:bg-card-border text-foreground/60 hover:text-white cursor-pointer transition-colors"
-                    >
-                      {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
-                    </button>
+                    <p>&bull; Provider: {selectedDepositMethod?.label ?? "Mobile Money"}.</p>
+                    <p>&bull; Currency sent to provider: {selectedDepositMethod?.currency ?? "UGX"}.</p>
+                    <p>&bull; Phone format: +256 followed by 9 digits.</p>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-4">
+                  <span className="block text-xs font-bold text-white uppercase tracking-wider">
+                    Deposit Destination QR Code
+                  </span>
+
+                  {/* Custom Simulated SVG QR Code */}
+                  <div className="h-40 w-40 mx-auto bg-white rounded-2xl p-3 flex items-center justify-center relative shadow-md">
+                    <QrCode className="h-full w-full text-background" />
+                    {/* Tiny emerald center glow badge */}
+                    <div className="absolute inset-1/2 transform -translate-x-1/2 -translate-y-1/2 h-8 w-8 rounded-lg bg-card border border-primary/20 flex items-center justify-center">
+                      <span className="text-[10px] font-black text-primary">FF</span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2 pt-2">
+                    <span className="block text-[10px] text-foreground/50 font-bold uppercase">
+                      Network Address details
+                    </span>
+                    <div className="flex items-center justify-between rounded-xl bg-card border border-card-border px-3 py-2 text-xs">
+                      <span className="text-white font-mono truncate max-w-[150px]">
+                        {selectedDepositMethod?.address ?? "No address configured"}
+                      </span>
+                      <button
+                        onClick={handleCopy}
+                        className="p-1 rounded-lg hover:bg-card-border text-foreground/60 hover:text-white cursor-pointer transition-colors"
+                      >
+                        {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="flex items-start gap-2.5 rounded-xl bg-primary/5 border border-primary/10 p-3 text-[11px] text-foreground/60 text-left leading-normal">
                 <ShieldAlert className="h-4.5 w-4.5 text-primary shrink-0 mt-0.5" />
-                Please transfer only the configured token network payload. Transactions compile within 1 network confirmation.
+                {depositNeedsPhone
+                  ? "Approve the mobile money prompt on your phone. The deposit stays pending until admin review confirms it."
+                  : "Please transfer only the configured token network payload. Transactions compile within 1 network confirmation."}
               </div>
             </>
           ) : (

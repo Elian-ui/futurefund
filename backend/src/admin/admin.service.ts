@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { Types } from 'mongoose';
+import * as bcrypt from 'bcrypt';
+import { randomBytes } from 'crypto';
 import { Investment, InvestmentDocument } from '../investor/schemas/investment.schema';
 import { InvestorService, PayoutRunResult } from '../investor/investor.service';
 import {
@@ -20,10 +22,12 @@ import {
 } from './schemas/investment-package.schema';
 import {
   DEFAULT_PAYMENT_METHODS,
+  PaymentMethod,
   PlatformSettings,
   PlatformSettingsDocument,
 } from './schemas/platform-settings.schema';
 import { JobLock, JobLockDocument } from '../jobs/schemas/job-lock.schema';
+import { PesajetService } from '../payments/pesajet.service';
 
 interface UpsertPackageInput {
   id?: string;
@@ -40,6 +44,31 @@ interface UpsertPackageInput {
 interface AdminActor {
   userId?: string;
   email?: string;
+  roles?: string[];
+}
+
+interface CreateUserInput {
+  name: string;
+  email: string;
+  phoneNumber?: string;
+  password: string;
+  roles?: string[];
+  balance?: number;
+  totalInvested?: number;
+  totalEarned?: number;
+  emailVerified?: boolean;
+}
+
+interface UpdateUserInput {
+  name?: string;
+  email?: string;
+  phoneNumber?: string;
+  password?: string;
+  roles?: string[];
+  balance?: number;
+  totalInvested?: number;
+  totalEarned?: number;
+  emailVerified?: boolean;
 }
 
 @Injectable()
@@ -63,6 +92,7 @@ export class AdminService {
     private readonly mailService: MailService,
     private readonly configService: ConfigService,
     private readonly investorService: InvestorService,
+    private readonly pesajetService: PesajetService,
   ) {}
 
   async getOverview() {
@@ -70,7 +100,7 @@ export class AdminService {
     await this.ensurePackages();
     const [users, activeInvestments, transactions, packages, settings] =
       await Promise.all([
-        this.userModel.find().lean().exec(),
+        this.userModel.find({ deletedAt: { $exists: false } }).lean().exec(),
         this.investmentModel.find({ status: 'active' }).lean().exec(),
         this.transactionModel
           .find()
@@ -134,7 +164,7 @@ export class AdminService {
     }
 
     const updated = await this.packageModel
-      .findOneAndUpdate({ id }, { $set: input }, { new: true, runValidators: true })
+      .findOneAndUpdate({ id }, { $set: input }, { returnDocument: 'after', runValidators: true })
       .exec();
 
     if (!updated) {
@@ -163,7 +193,7 @@ export class AdminService {
       .findOneAndUpdate(
         { key: 'default' },
         { $set: { ...input, key: 'default' } },
-        { new: true, upsert: true, runValidators: true },
+        { returnDocument: 'after', upsert: true, runValidators: true },
       )
       .exec();
 
@@ -178,19 +208,165 @@ export class AdminService {
     return next;
   }
 
-  async listUsers() {
-    return this.userModel.find().sort({ createdAt: -1 }).lean().exec();
+  async listUsers(includeDeleted = true) {
+    const filter = includeDeleted ? {} : { deletedAt: { $exists: false } };
+    return this.userModel.find(filter).sort({ createdAt: -1 }).lean().exec();
+  }
+
+  async getUser(userId: string) {
+    const user = await this.userModel.findById(userId).lean().exec();
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    return user;
+  }
+
+  async createUser(input: CreateUserInput, actor?: AdminActor) {
+    if (!input.name?.trim() || !input.email?.trim() || !input.password) {
+      throw new BadRequestException('Name, email and password are required');
+    }
+    if (input.password.length < 8) {
+      throw new BadRequestException('Password must be at least 8 characters');
+    }
+
+    const normalizedEmail = input.email.trim().toLowerCase();
+    const existing = await this.userModel.findOne({ email: normalizedEmail }).exec();
+    if (existing) {
+      throw new BadRequestException('An account with this email already exists');
+    }
+
+    const roles = this.normalizeUserRoles(input.roles, actor);
+    const user = await this.userModel.create({
+      name: input.name.trim(),
+      email: normalizedEmail,
+      phoneNumber: input.phoneNumber ? this.normalizeInternationalPhoneNumber(input.phoneNumber) : undefined,
+      passwordHash: await bcrypt.hash(input.password, 12),
+      roles,
+      balance: this.nonNegativeNumber(input.balance, 0, 'balance'),
+      totalInvested: this.nonNegativeNumber(input.totalInvested, 0, 'totalInvested'),
+      totalEarned: this.nonNegativeNumber(input.totalEarned, 0, 'totalEarned'),
+      referralCode: await this.generateReferralCode(input.name, normalizedEmail),
+      referralCount: 0,
+      referralEarnings: 0,
+      referralRewardPaid: false,
+      emailVerified: input.emailVerified ?? true,
+    });
+
+    await this.audit(actor, 'user.create', 'user', user.id, {
+      email: user.email,
+      roles,
+    });
+    return this.getUser(user.id);
+  }
+
+  async updateUser(userId: string, input: UpdateUserInput, actor?: AdminActor) {
+    const user = await this.userModel.findById(userId).select('+passwordHash').exec();
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const changes: Record<string, unknown> = {};
+    if (input.name !== undefined) {
+      if (!input.name.trim()) throw new BadRequestException('Name cannot be empty');
+      user.name = input.name.trim();
+      changes.name = user.name;
+    }
+    if (input.email !== undefined) {
+      const normalizedEmail = input.email.trim().toLowerCase();
+      if (!normalizedEmail) throw new BadRequestException('Email cannot be empty');
+      const existing = await this.userModel.findOne({ email: normalizedEmail, _id: { $ne: user._id } }).exec();
+      if (existing) throw new BadRequestException('An account with this email already exists');
+      user.email = normalizedEmail;
+      changes.email = normalizedEmail;
+    }
+    if (input.phoneNumber !== undefined) {
+      user.phoneNumber = input.phoneNumber.trim()
+        ? this.normalizeInternationalPhoneNumber(input.phoneNumber)
+        : undefined;
+      changes.phoneNumber = user.phoneNumber;
+    }
+    if (input.password !== undefined) {
+      if (input.password.length < 8) {
+        throw new BadRequestException('Password must be at least 8 characters');
+      }
+      user.passwordHash = await bcrypt.hash(input.password, 12);
+      changes.password = 'updated';
+    }
+    if (input.roles !== undefined) {
+      user.roles = this.normalizeUserRoles(input.roles, actor);
+      changes.roles = user.roles;
+    }
+    if (input.balance !== undefined) {
+      user.balance = this.nonNegativeNumber(input.balance, 0, 'balance');
+      changes.balance = user.balance;
+    }
+    if (input.totalInvested !== undefined) {
+      user.totalInvested = this.nonNegativeNumber(input.totalInvested, 0, 'totalInvested');
+      changes.totalInvested = user.totalInvested;
+    }
+    if (input.totalEarned !== undefined) {
+      user.totalEarned = this.nonNegativeNumber(input.totalEarned, 0, 'totalEarned');
+      changes.totalEarned = user.totalEarned;
+    }
+    if (input.emailVerified !== undefined) {
+      user.emailVerified = Boolean(input.emailVerified);
+      changes.emailVerified = user.emailVerified;
+    }
+
+    await user.save();
+    await this.audit(actor, 'user.update', 'user', userId, { changes });
+    return this.getUser(userId);
+  }
+
+  async softDeleteUser(userId: string, actor?: AdminActor, reason?: string) {
+    if (actor?.userId && actor.userId === userId) {
+      throw new BadRequestException('You cannot delete your own account');
+    }
+
+    const user = await this.userModel.findById(userId).exec();
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+    if (user.deletedAt) {
+      return this.getUser(userId);
+    }
+
+    user.deletedAt = new Date();
+    user.deletedBy = actor?.userId && Types.ObjectId.isValid(actor.userId)
+      ? new Types.ObjectId(actor.userId)
+      : undefined;
+    user.deletionReason = reason?.trim() || undefined;
+    user.lockedUntil = undefined;
+    user.failedLoginAttempts = 0;
+    await user.save();
+
+    await this.audit(actor, 'user.soft_delete', 'user', userId, {
+      email: user.email,
+      reason: user.deletionReason,
+    });
+    return this.getUser(userId);
+  }
+
+  async restoreUser(userId: string, actor?: AdminActor) {
+    const user = await this.userModel.findById(userId).exec();
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    user.deletedAt = undefined;
+    user.deletedBy = undefined;
+    user.deletionReason = undefined;
+    await user.save();
+
+    await this.audit(actor, 'user.restore', 'user', userId, { email: user.email });
+    return this.getUser(userId);
   }
 
   async updateUserRoles(userId: string, roles: string[], actor?: AdminActor) {
-    const allowedRoles = ['investor', 'support', 'admin', 'superadmin'];
-    const nextRoles = roles.filter((role) => allowedRoles.includes(role));
-    if (nextRoles.length === 0) {
-      throw new BadRequestException('At least one valid role is required');
-    }
+    const nextRoles = this.normalizeUserRoles(roles, actor, true);
 
     const user = await this.userModel
-      .findByIdAndUpdate(userId, { $set: { roles: nextRoles } }, { new: true })
+      .findByIdAndUpdate(userId, { $set: { roles: nextRoles } }, { returnDocument: 'after' })
       .exec();
 
     if (!user) {
@@ -302,6 +478,9 @@ export class AdminService {
     if (tx.status !== 'pending') {
       throw new BadRequestException('Transaction has already been reviewed');
     }
+    if (tx.externalPaymentId && tx.externalPaymentProvider) {
+      throw new BadRequestException('Mobile money transactions are confirmed automatically');
+    }
 
     const user = await this.userModel.findById(tx.userId).exec();
     if (!user) {
@@ -312,6 +491,30 @@ export class AdminService {
       user.balance += tx.amount;
       await this.creditReferralBonus(user, tx.amount, actor);
       await user.save();
+    }
+
+    if (tx.type === 'withdrawal') {
+      const paymentMethod = await this.resolveTransactionPaymentMethod(tx.method);
+      if (paymentMethod && this.isMobileMoney(paymentMethod)) {
+        const reference =
+          tx.externalPaymentReference ??
+          tx.reference ??
+          this.createPaymentReference('WDR', tx.userId.toString());
+        const response = await this.pesajetService.createPayment({
+          type: 'DISBURSEMENT',
+          amount: this.toUgxAmount(tx.amount),
+          currency: 'UGX',
+          phoneNumber: this.normalizeUgandanPhoneNumber(tx.destination),
+          provider: this.mobileMoneyProvider(paymentMethod),
+          reference,
+          description: `FutureFund wallet withdrawal for ${user.email}`,
+        });
+
+        tx.externalPaymentId = this.paymentResponseValue(response, ['id', 'transactionId', 'paymentId']);
+        tx.externalPaymentStatus = this.paymentResponseValue(response, ['status', 'state']);
+        tx.externalPaymentProvider = paymentMethod.provider;
+        tx.externalPaymentReference = reference;
+      }
     }
 
     tx.status = 'approved';
@@ -347,6 +550,9 @@ export class AdminService {
     }
     if (tx.status !== 'pending') {
       throw new BadRequestException('Transaction has already been reviewed');
+    }
+    if (tx.externalPaymentId && tx.externalPaymentProvider) {
+      throw new BadRequestException('Mobile money transactions are confirmed automatically');
     }
 
     const user = await this.userModel.findById(tx.userId).exec();
@@ -427,7 +633,7 @@ export class AdminService {
             lastRunAt: now,
           },
         },
-        { new: true },
+        { returnDocument: 'after' },
       )
       .exec();
   }
@@ -506,6 +712,119 @@ export class AdminService {
     return Number(this.configService.get<string>('REFERRAL_BONUS_USD') ?? 10);
   }
 
+  private normalizeUserRoles(roles: string[] | undefined, actor?: AdminActor, requireInput = false): User['roles'] {
+    const allowedRoles: User['roles'] = ['investor', 'support', 'admin', 'superadmin'];
+    const nextRoles = (roles ?? ['investor'])
+      .filter((role): role is User['roles'][number] => allowedRoles.includes(role as User['roles'][number]));
+
+    if (requireInput && nextRoles.length === 0) {
+      throw new BadRequestException('At least one valid role is required');
+    }
+    if (nextRoles.length === 0) {
+      nextRoles.push('investor');
+    }
+
+    const isSuperadmin = actor?.roles?.includes('superadmin');
+    const assignsStaffRole = nextRoles.some((role) => ['support', 'admin', 'superadmin'].includes(role));
+    if (assignsStaffRole && !isSuperadmin) {
+      throw new BadRequestException('Only a superadmin can assign staff roles');
+    }
+
+    return Array.from(new Set(nextRoles)) as User['roles'];
+  }
+
+  private nonNegativeNumber(value: number | undefined, fallback: number, field: string) {
+    if (value === undefined) return fallback;
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue) || numberValue < 0) {
+      throw new BadRequestException(`${field} must be a non-negative number`);
+    }
+    return numberValue;
+  }
+
+  private async generateReferralCode(name: string, email: string) {
+    const prefixSource = (name || email.split('@')[0] || 'FF').replace(/[^a-zA-Z0-9]/g, '');
+    const prefix = (prefixSource.slice(0, 5).toUpperCase() || 'FFUND').padEnd(5, 'X');
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const suffix = randomBytes(3).toString('hex').toUpperCase();
+      const code = `${prefix}${suffix}`;
+      const exists = await this.userModel.exists({ referralCode: code }).exec();
+      if (!exists) return code;
+    }
+
+    return randomBytes(8).toString('hex').toUpperCase();
+  }
+
+  private async resolveTransactionPaymentMethod(method?: string) {
+    if (!method) return undefined;
+    const settings = await this.ensureSettings();
+    const methods = settings?.paymentMethods?.length ? settings.paymentMethods : DEFAULT_PAYMENT_METHODS;
+    const normalizedMethod = method.trim().toUpperCase();
+    return methods.find((item) => {
+      return (
+        item.id.toUpperCase() === normalizedMethod ||
+        item.method.toUpperCase() === normalizedMethod ||
+        item.label.toUpperCase() === normalizedMethod
+      );
+    });
+  }
+
+  private isMobileMoney(method: PaymentMethod) {
+    return method.channel === 'mobile_money';
+  }
+
+  private mobileMoneyProvider(method: PaymentMethod) {
+    if (!method.provider) {
+      throw new BadRequestException('Mobile money provider is not configured');
+    }
+    return method.provider;
+  }
+
+  private normalizeUgandanPhoneNumber(phoneNumber?: string) {
+    const cleaned = phoneNumber?.trim().replace(/\s+/g, '') ?? '';
+    const normalized = cleaned.startsWith('0')
+      ? `+256${cleaned.slice(1)}`
+      : cleaned.startsWith('256')
+        ? `+${cleaned}`
+        : cleaned;
+
+    if (!/^\+256\d{9}$/.test(normalized)) {
+      throw new BadRequestException('Enter a valid Ugandan phone number, for example +256777652457');
+    }
+
+    return normalized;
+  }
+
+  private normalizeInternationalPhoneNumber(phoneNumber: string) {
+    const compact = phoneNumber.trim().replace(/[\s().-]/g, '');
+    const normalized = compact.startsWith('00') ? `+${compact.slice(2)}` : compact;
+
+    if (!/^\+[1-9]\d{6,14}$/.test(normalized)) {
+      throw new BadRequestException('Enter a valid phone number with country code');
+    }
+
+    return normalized;
+  }
+
+  private createPaymentReference(prefix: 'WDR', userId: string) {
+    return `FF-${prefix}-${Date.now()}-${userId.slice(-6)}`.toUpperCase();
+  }
+
+  private toUgxAmount(amountUsd: number) {
+    const rate = Number(this.configService.get<string>('UGX_PER_USD') ?? 3720);
+    const ugx = Math.round(amountUsd * (Number.isFinite(rate) && rate > 0 ? rate : 3720));
+    return Math.max(1, ugx);
+  }
+
+  private paymentResponseValue(response: Record<string, unknown>, keys: string[]) {
+    for (const key of keys) {
+      const value = response[key] ?? (response.data as Record<string, unknown> | undefined)?.[key];
+      if (value !== undefined && value !== null) return String(value);
+    }
+    return undefined;
+  }
+
   private async ensureSettings() {
     await this.settingsModel.updateOne(
       { key: 'default' },
@@ -530,6 +849,15 @@ export class AdminService {
         { $set: { paymentMethods: DEFAULT_PAYMENT_METHODS } },
       )
       .exec();
+
+    for (const paymentMethod of DEFAULT_PAYMENT_METHODS) {
+      await this.settingsModel
+        .updateOne(
+          { key: 'default', paymentMethods: { $not: { $elemMatch: { id: paymentMethod.id } } } },
+          { $push: { paymentMethods: paymentMethod } },
+        )
+        .exec();
+    }
 
     return this.settingsModel.findOne({ key: 'default' }).lean().exec();
   }

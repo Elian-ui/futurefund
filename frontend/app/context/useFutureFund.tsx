@@ -31,7 +31,11 @@ export interface PaymentMethod {
   label: string;
   method: string;
   network?: string;
-  address: string;
+  address?: string;
+  channel?: "crypto" | "mobile_money";
+  provider?: string;
+  currency?: string;
+  requiresPhoneNumber?: boolean;
   depositEnabled: boolean;
   withdrawalEnabled: boolean;
 }
@@ -73,6 +77,7 @@ export interface NotificationItem {
 export interface UserProfile {
   name: string;
   email: string;
+  phoneNumber?: string;
   balance: number;
   totalInvested: number;
   totalEarned: number;
@@ -123,11 +128,35 @@ export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
   withdrawalsEnabled: true,
   paymentMethods: [
     {
+      id: "MTN_MOBILE_MONEY_UG",
+      label: "MTN Mobile Money",
+      method: "MTN Mobile Money",
+      channel: "mobile_money",
+      provider: "mtn",
+      currency: "UGX",
+      requiresPhoneNumber: true,
+      depositEnabled: true,
+      withdrawalEnabled: true,
+    },
+    {
+      id: "AIRTEL_MONEY_UG",
+      label: "Airtel Money",
+      method: "Airtel Money",
+      channel: "mobile_money",
+      provider: "airtel",
+      currency: "UGX",
+      requiresPhoneNumber: true,
+      depositEnabled: true,
+      withdrawalEnabled: true,
+    },
+    {
       id: "USDT_TRC20",
       label: "USDT",
       method: "USDT TRC20",
       network: "TRC20",
       address: "TXu91K8hQ9cM1Xy9b5Zp2F1R8GvW3eFq9A",
+      channel: "crypto",
+      requiresPhoneNumber: false,
       depositEnabled: true,
       withdrawalEnabled: true,
     },
@@ -135,7 +164,7 @@ export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
   referralBonusUsd: 10,
 };
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL;
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:4000";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -166,7 +195,11 @@ interface FutureFundContextType {
   platformSettings: PlatformSettings;
   isPlatformLoaded: boolean;
   isLoaded: boolean;
-  deposit: (amount: number, method: string) => Promise<boolean>;
+  deposit: (
+    amount: number,
+    method: string,
+    details?: { phoneNumber?: string },
+  ) => Promise<{ success: boolean; error?: string }>;
   withdraw: (amount: number, address: string, method: string) => Promise<{ success: boolean; error?: string }>;
   buyPackage: (packageId: string, amount: number) => Promise<{ success: boolean; error?: string }>;
   refreshData: () => Promise<void>;
@@ -284,6 +317,7 @@ export function FutureFundProvider({ children }: { children: React.ReactNode }) 
       setUser({
         name: profile.name,
         email: profile.email,
+        phoneNumber: profile.phoneNumber,
         balance: profile.balance,
         totalInvested: profile.totalInvested,
         totalEarned: profile.totalEarned,
@@ -358,6 +392,7 @@ export function FutureFundProvider({ children }: { children: React.ReactNode }) 
         setUser({
           name: profile.name,
           email: profile.email,
+          phoneNumber: profile.phoneNumber,
           balance: profile.balance,
           totalInvested: profile.totalInvested,
           totalEarned: profile.totalEarned,
@@ -396,22 +431,28 @@ export function FutureFundProvider({ children }: { children: React.ReactNode }) 
 
   // ── Investor actions ───────────────────────────────────────────────────────
 
-  const deposit = async (amount: number, method: string): Promise<boolean> => {
-    if (amount <= 0) return false;
+  const deposit = async (
+    amount: number,
+    method: string,
+    details?: { phoneNumber?: string },
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (amount <= 0) return { success: false, error: "Amount must be positive." };
     try {
       const res = await fetch(`${API_BASE}/investor/deposit`, {
         method: "POST",
         headers: authHeaders(),
-        body: JSON.stringify({ amount, method }),
+        body: JSON.stringify({ amount, method, ...details }),
       });
       if (res.ok) {
         await syncData();
-        return true;
+        return { success: true };
       }
+      const errData = await res.json();
+      return { success: false, error: errData.message || "Failed to process deposit." };
     } catch (e) {
       console.error(e);
+      return { success: false, error: "Server connection failed." };
     }
-    return false;
   };
 
   const withdraw = async (

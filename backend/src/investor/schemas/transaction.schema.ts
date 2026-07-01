@@ -37,6 +37,27 @@ export class Transaction {
   @Prop({ required: false })
   reference?: string;
 
+  @Prop({ required: false })
+  externalPaymentId?: string;
+
+  @Prop({ required: false })
+  externalPaymentStatus?: string;
+
+  @Prop({ required: false })
+  externalPaymentProvider?: string;
+
+  @Prop({ required: false })
+  externalPaymentReference?: string;
+
+  @Prop({ required: false })
+  externalProviderReference?: string;
+
+  @Prop({ required: false })
+  externalPaymentFee?: number;
+
+  @Prop({ required: false })
+  externalFailureReason?: string;
+
   @Prop({ type: Types.ObjectId, ref: 'User', required: false })
   reviewedBy?: Types.ObjectId;
 
