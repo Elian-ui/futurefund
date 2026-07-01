@@ -94,7 +94,7 @@ export default function Image() {
             Secure compound yields with daily, weekly, and monthly plans.
           </div>
           <div style={{ display: "flex", gap: 18 }}>
-            {["Admin-managed plans", "Mobile money deposits", "Automated payouts"].map((item) => (
+            {["Mobile money deposits", "Automated payouts"].map((item) => (
               <div
                 key={item}
                 style={{
