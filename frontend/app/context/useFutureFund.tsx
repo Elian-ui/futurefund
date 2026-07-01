@@ -22,7 +22,18 @@ export interface PlatformSettings {
   maxWithdrawal: number;
   depositsEnabled: boolean;
   withdrawalsEnabled: boolean;
+  paymentMethods: PaymentMethod[];
   referralBonusUsd: number;
+}
+
+export interface PaymentMethod {
+  id: string;
+  label: string;
+  method: string;
+  network?: string;
+  address: string;
+  depositEnabled: boolean;
+  withdrawalEnabled: boolean;
 }
 
 export interface ActiveInvestment {
@@ -110,6 +121,17 @@ export const DEFAULT_PLATFORM_SETTINGS: PlatformSettings = {
   maxWithdrawal: 150_000,
   depositsEnabled: true,
   withdrawalsEnabled: true,
+  paymentMethods: [
+    {
+      id: "USDT_TRC20",
+      label: "USDT",
+      method: "USDT TRC20",
+      network: "TRC20",
+      address: "TXu91K8hQ9cM1Xy9b5Zp2F1R8GvW3eFq9A",
+      depositEnabled: true,
+      withdrawalEnabled: true,
+    },
+  ],
   referralBonusUsd: 10,
 };
 

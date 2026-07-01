@@ -40,6 +40,19 @@ export default function WalletPage() {
     usdWdrAmount > withdrawalMaxUsd ||
     user.balance < usdWdrAmount ||
     !canWithdrawByBalance;
+  const depositMethods = platformSettings.paymentMethods.filter((method) => method.depositEnabled);
+  const withdrawalMethods = platformSettings.paymentMethods.filter((method) => method.withdrawalEnabled);
+  const selectedDepositMethod = depositMethods.find((method) => method.id === depMethod) ?? depositMethods[0];
+  const selectedWithdrawalMethod = withdrawalMethods.find((method) => method.id === wdrMethod) ?? withdrawalMethods[0];
+
+  useEffect(() => {
+    if (depositMethods.length > 0 && !depositMethods.some((method) => method.id === depMethod)) {
+      setDepMethod(depositMethods[0].id);
+    }
+    if (withdrawalMethods.length > 0 && !withdrawalMethods.some((method) => method.id === wdrMethod)) {
+      setWdrMethod(withdrawalMethods[0].id);
+    }
+  }, [depMethod, depositMethods, withdrawalMethods, wdrMethod]);
 
   useEffect(() => {
     const previousCode = prevCurrencyRef.current;
@@ -84,14 +97,8 @@ export default function WalletPage() {
     );
   }
 
-  const cryptoAddresses: { [key: string]: string } = {
-    USDT_TRC20: "TXu91K8hQ9cM1Xy9b5Zp2F1R8GvW3eFq9A",
-    BTC: "bc1qxy2kg3ut5xgclz7qg4ccwv34tpx28xtnhp25uv",
-    BANK_WIRE: "FutureFund Holdings Ltd, Chase Manhattan, A/C: 991827493"
-  };
-
   const handleCopy = () => {
-    navigator.clipboard.writeText(cryptoAddresses[depMethod] || "");
+    navigator.clipboard.writeText(selectedDepositMethod?.address || "");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -106,6 +113,11 @@ export default function WalletPage() {
       setLoading(false);
       return;
     }
+    if (!selectedDepositMethod) {
+      setFeedback({ success: false, message: "No deposit method is currently available." });
+      setLoading(false);
+      return;
+    }
 
     if (depositAmountInvalid) {
       setFeedback({
@@ -117,7 +129,7 @@ export default function WalletPage() {
     }
 
     try {
-      const res = await deposit(usdDepAmount, depMethod.replace("_", " "));
+      const res = await deposit(usdDepAmount, selectedDepositMethod.id);
       if (res) {
         setFeedback({ success: true, message: `Deposit request for ${format(usdDepAmount)} submitted for admin review.` });
         setTimeout(() => {
@@ -142,6 +154,11 @@ export default function WalletPage() {
       setLoading(false);
       return;
     }
+    if (!selectedWithdrawalMethod) {
+      setFeedback({ success: false, message: "No withdrawal method is currently available." });
+      setLoading(false);
+      return;
+    }
 
     if (withdrawalAmountInvalid) {
       setFeedback({
@@ -153,7 +170,7 @@ export default function WalletPage() {
     }
 
     try {
-      const res = await withdraw(usdWdrAmount, destination, wdrMethod.replace("_", " "));
+      const res = await withdraw(usdWdrAmount, destination, selectedWithdrawalMethod.id);
       if (res.success) {
         setFeedback({ success: true, message: `Withdrawal request for ${format(usdWdrAmount)} submitted for admin review.` });
         setTimeout(() => {
@@ -222,12 +239,8 @@ export default function WalletPage() {
                 <label className="block text-xs font-semibold text-foreground/75 uppercase tracking-wider mb-2">
                   Deposit Method
                 </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { id: "USDT_TRC20", label: "USDT" },
-                    { id: "BTC", label: "BTC" },
-                    { id: "BANK_WIRE", label: "Bank" },
-                  ].map((m) => (
+                <div className="grid grid-cols-1 gap-2">
+                  {depositMethods.map((m) => (
                     <button
                       key={m.id}
                       type="button"
@@ -239,9 +252,15 @@ export default function WalletPage() {
                       }`}
                     >
                       {m.label}
+                      {m.network && <span className="ml-1 text-foreground/45">({m.network})</span>}
                     </button>
                   ))}
                 </div>
+                {depositMethods.length === 0 && (
+                  <p className="text-xs font-semibold text-amber-300">
+                    No deposit methods are currently configured.
+                  </p>
+                )}
               </div>
 
               {/* Amount input */}
@@ -279,7 +298,7 @@ export default function WalletPage() {
 
               <button
                 type="submit"
-                disabled={loading || !platformSettings.depositsEnabled || depositAmountInvalid}
+                disabled={loading || !platformSettings.depositsEnabled || depositAmountInvalid || !selectedDepositMethod}
                 className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-accent py-3.5 text-sm font-bold text-background shadow-md shadow-primary/20 hover:opacity-95 disabled:opacity-50 transition-opacity cursor-pointer mt-6"
               >
                 {loading ? (
@@ -303,12 +322,8 @@ export default function WalletPage() {
                 <label className="block text-xs font-semibold text-foreground/75 uppercase tracking-wider mb-2">
                   Withdrawal Method
                 </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { id: "USDT_TRC20", label: "USDT" },
-                    { id: "BTC", label: "BTC" },
-                    { id: "BANK_WIRE", label: "Bank" },
-                  ].map((m) => (
+                <div className="grid grid-cols-1 gap-2">
+                  {withdrawalMethods.map((m) => (
                     <button
                       key={m.id}
                       type="button"
@@ -320,9 +335,15 @@ export default function WalletPage() {
                       }`}
                     >
                       {m.label}
+                      {m.network && <span className="ml-1 text-foreground/45">({m.network})</span>}
                     </button>
                   ))}
                 </div>
+                {withdrawalMethods.length === 0 && (
+                  <p className="text-xs font-semibold text-amber-300">
+                    No withdrawal methods are currently configured.
+                  </p>
+                )}
               </div>
 
               {/* Destination address */}
@@ -336,11 +357,7 @@ export default function WalletPage() {
                     required
                     value={destination}
                     onChange={(e) => setDestination(e.target.value)}
-                    placeholder={
-                      wdrMethod === "BANK_WIRE"
-                        ? "IBAN/Routing and Account Number"
-                        : `${wdrMethod.replace("_", " ")} Address destination`
-                    }
+                    placeholder={`${selectedWithdrawalMethod?.method ?? "Wallet"} address destination`}
                     className="bg-transparent border-0 text-white placeholder-foreground/30 focus:outline-none focus:ring-0 w-full text-base font-medium sm:text-sm"
                   />
                 </div>
@@ -383,7 +400,7 @@ export default function WalletPage() {
 
               <button
                 type="submit"
-                disabled={loading || !platformSettings.withdrawalsEnabled || withdrawalAmountInvalid || !destination.trim()}
+                disabled={loading || !platformSettings.withdrawalsEnabled || withdrawalAmountInvalid || !destination.trim() || !selectedWithdrawalMethod}
                 className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-accent py-3.5 text-sm font-bold text-background shadow-md shadow-primary/20 hover:opacity-95 disabled:opacity-50 transition-opacity cursor-pointer mt-6"
               >
                 {loading ? (
@@ -400,64 +417,37 @@ export default function WalletPage() {
         <div className="md:col-span-5 flex flex-col justify-center bg-card/30 rounded-3xl border border-card-border p-6 text-center space-y-6">
           {activeTab === "deposit" ? (
             <>
-              {depMethod !== "BANK_WIRE" ? (
-                <div className="space-y-4">
-                  <span className="block text-xs font-bold text-white uppercase tracking-wider">
-                    Deposit Destination QR Code
-                  </span>
-                  
-                  {/* Custom Simulated SVG QR Code */}
-                  <div className="h-40 w-40 mx-auto bg-white rounded-2xl p-3 flex items-center justify-center relative shadow-md">
-                    <QrCode className="h-full w-full text-background" />
-                    {/* Tiny emerald center glow badge */}
-                    <div className="absolute inset-1/2 transform -translate-x-1/2 -translate-y-1/2 h-8 w-8 rounded-lg bg-card border border-primary/20 flex items-center justify-center">
-                      <span className="text-[10px] font-black text-primary">FF</span>
-                    </div>
-                  </div>
+              <div className="space-y-4">
+                <span className="block text-xs font-bold text-white uppercase tracking-wider">
+                  Deposit Destination QR Code
+                </span>
 
-                  <div className="space-y-2 pt-2">
-                    <span className="block text-[10px] text-foreground/50 font-bold uppercase">
-                      Network Address details
+                {/* Custom Simulated SVG QR Code */}
+                <div className="h-40 w-40 mx-auto bg-white rounded-2xl p-3 flex items-center justify-center relative shadow-md">
+                  <QrCode className="h-full w-full text-background" />
+                  {/* Tiny emerald center glow badge */}
+                  <div className="absolute inset-1/2 transform -translate-x-1/2 -translate-y-1/2 h-8 w-8 rounded-lg bg-card border border-primary/20 flex items-center justify-center">
+                    <span className="text-[10px] font-black text-primary">FF</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2 pt-2">
+                  <span className="block text-[10px] text-foreground/50 font-bold uppercase">
+                    Network Address details
+                  </span>
+                  <div className="flex items-center justify-between rounded-xl bg-card border border-card-border px-3 py-2 text-xs">
+                    <span className="text-white font-mono truncate max-w-[150px]">
+                      {selectedDepositMethod?.address ?? "No address configured"}
                     </span>
-                    <div className="flex items-center justify-between rounded-xl bg-card border border-card-border px-3 py-2 text-xs">
-                      <span className="text-white font-mono truncate max-w-[150px]">
-                        {cryptoAddresses[depMethod]}
-                      </span>
-                      <button
-                        onClick={handleCopy}
-                        className="p-1 rounded-lg hover:bg-card-border text-foreground/60 hover:text-white cursor-pointer transition-colors"
-                      >
-                        {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
-                      </button>
-                    </div>
+                    <button
+                      onClick={handleCopy}
+                      className="p-1 rounded-lg hover:bg-card-border text-foreground/60 hover:text-white cursor-pointer transition-colors"
+                    >
+                      {copied ? <Check className="h-3.5 w-3.5 text-primary" /> : <Copy className="h-3.5 w-3.5" />}
+                    </button>
                   </div>
                 </div>
-              ) : (
-                <div className="space-y-4 text-left">
-                  <span className="block text-xs font-bold text-white uppercase tracking-wider text-center">
-                    Bank wire coordinates
-                  </span>
-
-                  <div className="rounded-xl bg-card border border-card-border p-4 text-xs font-mono space-y-2 text-foreground/75 leading-relaxed">
-                    <div>
-                      <span className="block text-[10px] text-foreground/40 font-bold">BENEFICIARY</span>
-                      FutureFund Holdings Ltd
-                    </div>
-                    <div>
-                      <span className="block text-[10px] text-foreground/40 font-bold">RECEIVING BANK</span>
-                      Chase Manhattan N.A.
-                    </div>
-                    <div>
-                      <span className="block text-[10px] text-foreground/40 font-bold">IBAN/ACCOUNT</span>
-                      US88CHAS33991827493
-                    </div>
-                    <div>
-                      <span className="block text-[10px] text-foreground/40 font-bold">SWIFT/BIC</span>
-                      CHASUS33XXX
-                    </div>
-                  </div>
-                </div>
-              )}
+              </div>
 
               <div className="flex items-start gap-2.5 rounded-xl bg-primary/5 border border-primary/10 p-3 text-[11px] text-foreground/60 text-left leading-normal">
                 <ShieldAlert className="h-4.5 w-4.5 text-primary shrink-0 mt-0.5" />

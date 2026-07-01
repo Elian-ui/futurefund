@@ -19,6 +19,7 @@ import {
   PackageCycle,
 } from './schemas/investment-package.schema';
 import {
+  DEFAULT_PAYMENT_METHODS,
   PlatformSettings,
   PlatformSettingsDocument,
 } from './schemas/platform-settings.schema';
@@ -517,10 +518,18 @@ export class AdminService {
           maxWithdrawal: 150000,
           depositsEnabled: true,
           withdrawalsEnabled: true,
+          paymentMethods: DEFAULT_PAYMENT_METHODS,
         },
       },
       { upsert: true },
     );
+
+    await this.settingsModel
+      .updateOne(
+        { key: 'default', $or: [{ paymentMethods: { $exists: false } }, { paymentMethods: { $size: 0 } }] },
+        { $set: { paymentMethods: DEFAULT_PAYMENT_METHODS } },
+      )
+      .exec();
 
     return this.settingsModel.findOne({ key: 'default' }).lean().exec();
   }

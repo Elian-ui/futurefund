@@ -11,6 +11,8 @@ import {
   InvestmentPackageDocument,
 } from '../admin/schemas/investment-package.schema';
 import {
+  DEFAULT_PAYMENT_METHODS,
+  PaymentMethod,
   PlatformSettings,
   PlatformSettingsDocument,
 } from '../admin/schemas/platform-settings.schema';
@@ -193,6 +195,7 @@ export class InvestorService {
     if (!settings.depositsEnabled) {
       throw new BadRequestException('Deposits are currently disabled');
     }
+    const paymentMethod = this.resolvePaymentMethod(settings.paymentMethods, method, 'deposit');
     if (amount < settings.minDeposit) {
       throw new BadRequestException(`Minimum deposit is $${settings.minDeposit}`);
     }
@@ -207,9 +210,9 @@ export class InvestorService {
       type: 'deposit',
       status: 'pending',
       amount,
-      method,
+      method: paymentMethod.method,
       reference,
-      description: `Deposit request via ${method}`,
+      description: `Deposit request via ${paymentMethod.method}`,
       timestamp: new Date(),
     });
     await tx.save();
@@ -233,6 +236,7 @@ export class InvestorService {
     if (!settings.withdrawalsEnabled) {
       throw new BadRequestException('Withdrawals are currently disabled');
     }
+    const paymentMethod = this.resolvePaymentMethod(settings.paymentMethods, method, 'withdrawal');
     if (amount < settings.minWithdrawal) {
       throw new BadRequestException(`Minimum withdrawal is $${settings.minWithdrawal}`);
     }
@@ -252,9 +256,9 @@ export class InvestorService {
       type: 'withdrawal',
       status: 'pending',
       amount,
-      method,
+      method: paymentMethod.method,
       destination: address,
-      description: `Withdrawal request to ${address} (${method})`,
+      description: `Withdrawal request to ${address} (${paymentMethod.method})`,
       timestamp: new Date(),
     });
     await tx.save();
@@ -372,6 +376,7 @@ export class InvestorService {
       maxWithdrawal,
       depositsEnabled,
       withdrawalsEnabled,
+      paymentMethods: this.publicPaymentMethods(settings.paymentMethods),
       referralBonusUsd: this.referralBonusAmount(),
     };
   }
@@ -413,14 +418,63 @@ export class InvestorService {
           maxWithdrawal: 150000,
           depositsEnabled: true,
           withdrawalsEnabled: true,
+          paymentMethods: DEFAULT_PAYMENT_METHODS,
         },
       },
       { upsert: true },
     );
+
+    await this.settingsModel
+      .updateOne(
+        { key: 'default', $or: [{ paymentMethods: { $exists: false } }, { paymentMethods: { $size: 0 } }] },
+        { $set: { paymentMethods: DEFAULT_PAYMENT_METHODS } },
+      )
+      .exec();
   }
 
   private referralBonusAmount() {
     return Number(this.configService.get<string>('REFERRAL_BONUS_USD') ?? 10);
+  }
+
+  private publicPaymentMethods(methods: PaymentMethod[] = DEFAULT_PAYMENT_METHODS) {
+    return methods
+      .filter((method) => method.enabled)
+      .map(({ id, label, method, network, address, depositEnabled, withdrawalEnabled }) => ({
+        id,
+        label,
+        method,
+        network,
+        address,
+        depositEnabled,
+        withdrawalEnabled,
+      }));
+  }
+
+  private resolvePaymentMethod(
+    methods: PaymentMethod[] = DEFAULT_PAYMENT_METHODS,
+    value: string,
+    direction: 'deposit' | 'withdrawal',
+  ) {
+    const normalizedValue = value?.trim().toUpperCase();
+    const method = methods.find((item) => {
+      return (
+        item.id.toUpperCase() === normalizedValue ||
+        item.method.toUpperCase() === normalizedValue ||
+        item.label.toUpperCase() === normalizedValue
+      );
+    });
+
+    if (!method || !method.enabled) {
+      throw new BadRequestException('Unsupported payment method');
+    }
+    if (direction === 'deposit' && !method.depositEnabled) {
+      throw new BadRequestException('This payment method is not available for deposits');
+    }
+    if (direction === 'withdrawal' && !method.withdrawalEnabled) {
+      throw new BadRequestException('This payment method is not available for withdrawals');
+    }
+
+    return method;
   }
 
   private async createNotification(
