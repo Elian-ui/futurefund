@@ -15,10 +15,43 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const siteUrl =
+  process.env.NEXT_PUBLIC_SITE_URL ??
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL
+    ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+    : process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "http://localhost:3000");
+
+const title = "FutureFund | High-Yield ROI Investment Platform";
+const description =
+  "FutureFund is a premier return on investment platform offering structured daily, weekly, and monthly growth plans.";
+
 export const metadata: Metadata = {
-  title: "FutureFund | High-Yield ROI Investment Platform",
-  description:
-    "FutureFund is a premier return on investment platform offering structured daily, weekly, and monthly growth plans.",
+  metadataBase: new URL(siteUrl),
+  title,
+  description,
+  openGraph: {
+    title,
+    description,
+    url: "/",
+    siteName: "FutureFund",
+    images: [
+      {
+        url: "/opengraph-image",
+        width: 1200,
+        height: 630,
+        alt: "FutureFund high-yield ROI investment platform",
+      },
+    ],
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+    images: ["/opengraph-image"],
+  },
   icons: {
     icon: [
       { url: "/futurefund-mark.svg", type: "image/svg+xml" },
