@@ -1,0 +1,12 @@
+{
+  "name": "futurefund",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "build": "pnpm --filter frontend build && pnpm --filter backend build && pnpm --filter shadcn-admin build",
+    "build:frontend": "pnpm --filter frontend build",
+    "build:backend": "pnpm --filter backend build",
+    "build:admin": "pnpm --filter shadcn-admin build",
+    "test:backend": "pnpm --filter backend test -- --runInBand --watchman=false"
+  }
+}

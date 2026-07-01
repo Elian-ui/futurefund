@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+:root {
+  --background: #070b09;
+  --foreground: #f0fdf4;
+  --card: #0d1511;
+  --card-border: #162a20;
+  --primary: #10b981;
+  --primary-glow: rgba(16, 185, 129, 0.15);
+  --accent: #34d399;
+  --accent-gold: #fbbf24;
+}
+
+@theme inline {
+  --color-background: #070b09;
+  --color-foreground: #f0fdf4;
+  --color-card: #0d1511;
+  --color-card-border: #162a20;
+  --color-primary: #10b981;
+  --color-primary-glow: rgba(16, 185, 129, 0.15);
+  --color-accent: #34d399;
+  --color-accent-gold: #fbbf24;
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), system-ui, -apple-system, sans-serif;
+}
+
+html,
+body {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: clip;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+a,
+input,
+select,
+textarea,
+label,
+[role="button"],
+[tabindex]:not([tabindex="-1"]) {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+a,
+[role="button"] {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.glass-card {
+  background: rgba(13, 21, 17, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(22, 42, 32, 0.8);
+}
+
+.glass-card-glow {
+  background: rgba(13, 21, 17, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(52, 211, 153, 0.2);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.7), 0 0 20px 2px rgba(16, 185, 129, 0.05);
+}
+
+.glow-text {
+  text-shadow: 0 0 15px rgba(52, 211, 153, 0.3);
+}
+
+/*
+  iOS Safari is very slow at hit-testing and repainting pages that combine
+  sticky headers, backdrop-filter, large CSS blur layers, and transition-all.
+  Keep the visual language but remove the expensive filters on touch Safari so
+  taps resolve immediately instead of feeling like delayed onClick handlers.
+*/
+@supports (-webkit-touch-callout: none) {
+  header,
+  .glass-card,
+  .glass-card-glow,
+  .backdrop-blur-sm,
+  .backdrop-blur-md,
+  .backdrop-blur-xl {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  .blur-3xl {
+    filter: none !important;
+  }
+
+  .transition-all {
+    transition-property: color, background-color, border-color, opacity, transform !important;
+  }
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #070b09;
+}
+::-webkit-scrollbar-thumb {
+  background: #162a20;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #10b981;
+}
