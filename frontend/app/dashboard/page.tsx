@@ -85,7 +85,7 @@ export default function Dashboard() {
             Deposit
           </Link>
           <Link
-            href="/wallet"
+            href="/wallet?tab=withdraw"
             className="flex min-w-0 flex-col items-center justify-center gap-1 rounded-2xl border border-card-border bg-card/60 hover:bg-card px-2 py-3 text-[11px] font-bold text-white transition-colors sm:flex-row sm:gap-1.5 sm:rounded-xl sm:px-4 sm:py-2.5 sm:text-xs"
           >
             <ArrowUpRight className="h-5 w-5 text-rose-400 sm:h-4 sm:w-4" />

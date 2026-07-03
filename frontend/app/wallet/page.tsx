@@ -94,6 +94,16 @@ export default function WalletPage() {
   const [feedback, setFeedback] = useState<{ success: boolean; message: string } | null>(null);
   const prevCurrencyRef = useRef(currency.code);
 
+  useEffect(() => {
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab === "deposit" || tab === "withdraw") {
+      window.requestAnimationFrame(() => {
+        setActiveTab(tab);
+        setFeedback(null);
+      });
+    }
+  }, []);
+
   // Local-currency equivalents for display/validation
   const depositMinUsd = platformSettings.minDeposit;
   const depositMaxUsd = Math.max(platformSettings.minDeposit, platformSettings.maxDeposit);
