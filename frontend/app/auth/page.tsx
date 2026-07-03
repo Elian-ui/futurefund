@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { useFutureFund } from "../context/useFutureFund";
-import { Shield, Mail, User, Check, KeyRound, Lock, Eye, EyeOff, AlertCircle, Users } from "lucide-react";
+import { Mail, User, Check, KeyRound, Lock, Eye, EyeOff, AlertCircle, Users } from "lucide-react";
 import { useRouter } from "next/navigation";
 import PhoneNumberInput from "../components/PhoneNumberInput";
 
@@ -348,12 +348,6 @@ export default function Auth() {
             )}
           </button>
         </form>
-
-        {/* Secure marker */}
-        <div className="flex items-center justify-center gap-1.5 text-[10px] text-foreground/45 border-t border-card-border/60 pt-4">
-          <Shield className="h-3.5 w-3.5 text-primary" />
-          JWT Secured · End-to-End Encrypted
-        </div>
       </div>
     </div>
   );
